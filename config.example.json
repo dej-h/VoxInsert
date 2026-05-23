@@ -1,0 +1,35 @@
+{
+  "hotkeys": {
+    "toggle_recording": "F8",
+    "cancel_recording": "Escape"
+  },
+  "transcription": {
+    "provider": "openai",
+    "model": "gpt-4o-transcribe",
+    "credential_target": "VoiceAgentTyper/OpenAI",
+    "language_hint": "en",
+    "prompt": "The user is dictating technical prompts for coding agents, IDEs, VS Code, GitHub Copilot, Claude Code, Codex, Python, C++, FastAPI, LangChain, OpenAI, Docker, GitHub, APIs, terminals, embeddings, rerankers, and software engineering workflows."
+  },
+  "insertion": {
+    "mode": "clipboard_paste",
+    "restore_clipboard": true,
+    "auto_press_enter": false
+  },
+  "audio": {
+    "sample_rate": 16000,
+    "channels": 1,
+    "frames_per_buffer": 256,
+    "use_silence_trimming": true,
+    "remove_leading_trailing_silence": true,
+    "remove_internal_silence_longer_than_ms": 1000,
+    "max_recording_seconds": 300
+  },
+  "ui": {
+    "show_status_pill": true,
+    "status_pill_position": "bottom_right"
+  },
+  "system": {
+    "auto_start_with_windows": true,
+    "launch_minimized": true
+  }
+}

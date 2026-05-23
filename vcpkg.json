@@ -1,0 +1,11 @@
+{
+  "name": "voice-agent-typer",
+  "version-string": "0.1.0",
+  "builtin-baseline": "22d9c655dc24ad24c6cac27607005e619ce46740",
+  "dependencies": [
+    "portaudio",
+    "cpr",
+    "nlohmann-json",
+    "spdlog"
+  ]
+}

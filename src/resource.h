@@ -1,0 +1,19 @@
+#ifndef IDI_APP_ICON
+#define IDI_APP_ICON 101
+#endif
+
+#ifndef IDI_TRAY_ICON
+#define IDI_TRAY_ICON 102
+#endif
+
+#ifndef IDD_OPENAI_KEY_DIALOG
+#define IDD_OPENAI_KEY_DIALOG 201
+#endif
+
+#ifndef IDC_OPENAI_TARGET_VALUE
+#define IDC_OPENAI_TARGET_VALUE 10001
+#endif
+
+#ifndef IDC_OPENAI_API_KEY_EDIT
+#define IDC_OPENAI_API_KEY_EDIT 10002
+#endif
