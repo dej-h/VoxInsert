@@ -1,4 +1,4 @@
-# VoiceAgentTyper — Updated Build Guide
+# VoxInsert — Updated Build Guide
 
 A Windows-native C++ utility that records speech with a toggle hotkey, transcribes it, and inserts the final transcript into the currently focused text box.
 
@@ -72,7 +72,7 @@ Everything else is later.
 The project is done when this works on a normal Windows user account:
 
 ```text
-1. Run VoiceAgentTyper.exe.
+1. Run VoxInsert.exe.
 2. Enter/save OpenAI API key once in the app.
 3. Click into Notepad.
 4. Press F8.
@@ -108,7 +108,7 @@ Use WSL for Linux/backend/server work. Use native Windows tooling for this repo.
 Recommended repo location:
 
 ```text
-C:\dev\VoiceAgentTyper
+C:\dev\VoxInsert
 ```
 
 Open it in normal VS Code, not `Remote - WSL`.
@@ -198,7 +198,7 @@ Full Visual Studio Community path, if applicable:
 ## 6. Repo layout
 
 ```text
-VoiceAgentTyper/
+VoxInsert/
   CMakeLists.txt
   CMakePresets.json
   vcpkg.json
@@ -370,7 +370,7 @@ cmake --build --preset release
 ```cmake
 cmake_minimum_required(VERSION 3.25)
 
-project(VoiceAgentTyper
+project(VoxInsert
     VERSION 0.1.0
     LANGUAGES CXX
 )
@@ -379,7 +379,7 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-add_executable(VoiceAgentTyper WIN32
+add_executable(VoxInsert WIN32
     src/main.cpp
 
     src/App.cpp
@@ -399,7 +399,7 @@ add_executable(VoiceAgentTyper WIN32
     src/Utf.cpp
 )
 
-target_compile_definitions(VoiceAgentTyper PRIVATE
+target_compile_definitions(VoxInsert PRIVATE
     UNICODE
     _UNICODE
     WIN32_LEAN_AND_MEAN
@@ -410,7 +410,7 @@ find_package(cpr CONFIG REQUIRED)
 find_package(nlohmann_json CONFIG REQUIRED)
 find_package(portaudio CONFIG REQUIRED)
 
-target_link_libraries(VoiceAgentTyper PRIVATE
+target_link_libraries(VoxInsert PRIVATE
     cpr::cpr
     nlohmann_json::nlohmann_json
     portaudio
@@ -421,7 +421,7 @@ target_link_libraries(VoiceAgentTyper PRIVATE
 )
 
 if (MSVC)
-    target_compile_options(VoiceAgentTyper PRIVATE
+    target_compile_options(VoxInsert PRIVATE
         /W4
         /permissive-
         /utf-8
@@ -446,14 +446,14 @@ For v0.1, use `x64-windows` dynamic linking. If packaging later becomes annoying
 Runtime config path:
 
 ```text
-%APPDATA%\VoiceAgentTyper\config.json
+%APPDATA%\VoxInsert\config.json
 ```
 
 First launch behavior:
 
 ```text
 if config does not exist:
-    create %APPDATA%\VoiceAgentTyper
+  create %APPDATA%\VoxInsert
     copy config.example.json to config.json
 ```
 
@@ -756,7 +756,7 @@ Owns:
 Output path:
 
 ```text
-%TEMP%\VoiceAgentTyper\recording-{timestamp}.wav
+%TEMP%\VoxInsert\recording-{timestamp}.wav
 ```
 
 Shape:
@@ -1072,7 +1072,7 @@ HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run
 Value:
 
 ```text
-VoiceAgentTyper = "C:\path\to\VoiceAgentTyper.exe"
+VoxInsert = "C:\path\to\VoxInsert.exe"
 ```
 
 No admin required.
@@ -1452,7 +1452,7 @@ cmake --build --preset release
 ## 20. README skeleton
 
 ```markdown
-# VoiceAgentTyper
+# VoxInsert
 
 A small Windows tray utility that records speech, transcribes it, and inserts the transcript into the currently focused text box.
 
@@ -1471,7 +1471,7 @@ It is designed for dictating prompts into AI agents, editors, browsers, terminal
 
 ## Setup
 
-1. Run VoiceAgentTyper.exe.
+1. Run VoxInsert.exe.
 2. Enter your OpenAI API key in settings.
 3. Click into any text box.
 4. Press F8.
@@ -1547,7 +1547,7 @@ F8 -> speak -> F8 -> text appears in Notepad
 Use this prompt to start:
 
 ```text
-We are building VoiceAgentTyper, a Windows-only C++20 tray utility.
+We are building VoxInsert, a Windows-only C++20 tray utility.
 
 The v0.1 goal is:
 F8 toggles recording on/off.
