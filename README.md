@@ -33,14 +33,19 @@ It is built as a local-first utility: API keys stay in Windows Credential Manage
 
 ## Requirements
 
+If you just want to use VoxInsert from a packaged release, you only need:
+
 - Windows 10 or Windows 11.
 - PowerShell.
+- An OpenAI API key, a Mistral API key, or both.
+
+If you want to build VoxInsert from source, you also need:
+
 - Visual Studio Build Tools 2022 with the C++ workload.
 - CMake.
 - Ninja.
 - Git.
 - vcpkg, normally at `C:\dev\vcpkg`.
-- An OpenAI API key, a Mistral API key, or both.
 
 The bootstrap script can install or validate the native build tools used by this repo.
 
@@ -52,7 +57,7 @@ Set-ExecutionPolicy -Scope Process Bypass
 
 ## Install From Release Zip
 
-If you just want to use VoxInsert on a Windows machine, download the latest release zip from GitHub Releases.
+If you just want to use VoxInsert on a Windows machine, download the latest release zip from [GitHub Releases](https://github.com/dej-h/VoxInsert/releases). You do not need Visual Studio, CMake, Ninja, or vcpkg for this path.
 
 Extract the zip, then run either:
 
@@ -95,7 +100,7 @@ The uninstall flow removes the installed program files and shortcuts, then optio
 Clone the repo, then run the bootstrap once:
 
 ```powershell
-git clone <repo-url> VoxInsert
+git clone https://github.com/dej-h/VoxInsert.git VoxInsert
 cd VoxInsert
 .\scripts\bootstrap-toolchain.ps1
 ```
