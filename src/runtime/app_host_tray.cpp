@@ -2,7 +2,6 @@
 
 #include "observability/logging.h"
 #include "resource.h"
-#include "security/openai_credential_store.h"
 
 #include <commctrl.h>
 
@@ -213,20 +212,6 @@ void ShowTrayMenu(AppContext& context) {
         hasLastRecordingPath ? MF_STRING : (MF_STRING | MF_GRAYED),
         kTrayMenuCommandOpenLastRecordingFolder,
         L"Open Last Recording Folder");
-    AppendMenuW(menuHandle, MF_SEPARATOR, 0, nullptr);
-
-    bool credentialExists = false;
-    std::wstring failureReason;
-    if (!CheckOpenAiCredentialExists(context.config.transcription, credentialExists, failureReason)) {
-        context.logger->warn("OpenAI credential check failed while building tray menu: {}", Utf8FromWide(failureReason));
-    }
-
-    AppendMenuW(menuHandle, MF_STRING, kTrayMenuCommandSetOpenAiKey, L"Set OpenAI Key...");
-    AppendMenuW(
-        menuHandle,
-        credentialExists ? MF_STRING : (MF_STRING | MF_GRAYED),
-        kTrayMenuCommandRemoveOpenAiKey,
-        L"Remove OpenAI Key");
     AppendMenuW(menuHandle, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menuHandle, MF_STRING, kTrayMenuCommandQuit, L"Quit");
 

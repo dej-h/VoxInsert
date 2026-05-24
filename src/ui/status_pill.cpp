@@ -32,6 +32,7 @@ constexpr auto kErrorFadeOutDuration = std::chrono::milliseconds(300);
 constexpr auto kDoneHoldDuration = std::chrono::milliseconds(600);
 constexpr auto kErrorHoldDuration = std::chrono::milliseconds(2400);
 constexpr auto kAmplitudeIdleTimeout = std::chrono::milliseconds(120);
+constexpr int kAmplitudeEncodingScale = 10000;
 constexpr int kBasePillHeight = 28;
 constexpr int kBaseMinimumPillWidth = 60;
 constexpr int kBasePaddingX = 12;
@@ -41,10 +42,186 @@ constexpr int kBaseSeparatorGap = 8;
 constexpr int kBaseStateSlotWidth = 32;
 constexpr int kBaseAnchorGap = 0;
 constexpr int kBaseClockAnchorRightMargin = 12;
+constexpr int kBaseTrayAnchorGap = 8;
+constexpr int kBaseScreenMargin = 12;
+constexpr int kBaseSeparatorWidth = 1;
+constexpr float kPillBoundsInset = 0.5f;
+constexpr float kPillBoundsTrim = 1.0f;
+constexpr float kPillCornerRadius = 14.0f;
+constexpr float kBorderPenWidth = 0.5f;
+
+struct RgbColor {
+    BYTE red;
+    BYTE green;
+    BYTE blue;
+};
+
+struct PillPalette {
+    RgbColor fillColor;
+    float fillAlpha;
+    RgbColor borderColor;
+    float borderAlpha;
+    RgbColor separatorColor;
+    float separatorAlpha;
+};
+
+struct RecordingMeterLayout {
+    std::array<float, 5> barProfile;
+    float barWidth;
+    float barGap;
+    float minHeight;
+    float maxHeight;
+};
+
+struct TranscribingLayout {
+    std::array<float, 3> waveHeights;
+    float pulsePeriodMs;
+    float waveBarWidth;
+    float waveBarGap;
+    float waveMinHeight;
+    float waveMaxHeight;
+    float waveBaseScale;
+    float waveScaleRange;
+    float wavePhaseOffset;
+    float accentPenWidth;
+    float textPenWidth;
+    float textAlpha;
+    float arrowXOffset;
+    float arrowShaftLength;
+    float arrowWingStartX;
+    float arrowWingYOffset;
+    float arrowWingEndX;
+    float textXOffset;
+    float textLineYOffset;
+    float textTopLength;
+    float textMiddleLength;
+    float textBottomLength;
+};
+
+struct SpinnerLayout {
+    int rotationPeriodMs;
+    float diameter;
+    float penWidth;
+    float trackAlpha;
+    float arcSpanDegrees;
+};
+
+struct CheckmarkLayout {
+    float penWidth;
+    float startX;
+    float midX;
+    float midYOffset;
+    float endX;
+    float endYOffset;
+};
+
+struct AlertLayout {
+    float penWidth;
+    float apexX;
+    float apexYOffset;
+    float rightX;
+    float baseYOffset;
+    float exclamationTopYOffset;
+    float exclamationBottomYOffset;
+    float dotX;
+    float dotYOffset;
+    float dotSize;
+};
+
+constexpr RgbColor kNeutralBackgroundRgb{28, 28, 30};
+constexpr RgbColor kNeutralForegroundRgb{255, 255, 255};
+constexpr RgbColor kErrorRgb{239, 68, 68};
+constexpr RgbColor kWorkingAccentRgb{245, 158, 11};
+constexpr RgbColor kDoneAccentRgb{16, 185, 129};
+
+constexpr PillPalette kDefaultPillPalette{
+    kNeutralBackgroundRgb,
+    0.92f,
+    kNeutralForegroundRgb,
+    0.14f,
+    kNeutralForegroundRgb,
+    0.18f,
+};
+
+constexpr PillPalette kErrorPillPalette{
+    kErrorRgb,
+    0.12f,
+    kErrorRgb,
+    0.30f,
+    kErrorRgb,
+    0.30f,
+};
+
+constexpr RecordingMeterLayout kRecordingMeterLayout{
+    {0.42f, 0.68f, 1.0f, 0.68f, 0.42f},
+    3.0f,
+    2.5f,
+    1.75f,
+    18.0f,
+};
+
+constexpr TranscribingLayout kTranscribingLayout{
+    {0.48f, 0.92f, 0.62f},
+    220.0f,
+    2.2f,
+    1.8f,
+    4.0f,
+    10.0f,
+    0.78f,
+    0.22f,
+    0.95f,
+    1.35f,
+    1.2f,
+    0.72f,
+    9.5f,
+    5.0f,
+    3.1f,
+    2.5f,
+    5.6f,
+    17.5f,
+    4.0f,
+    8.5f,
+    11.0f,
+    6.5f,
+};
+
+constexpr SpinnerLayout kWorkingSpinnerLayout{
+    800,
+    13.0f,
+    1.5f,
+    0.15f,
+    110.0f,
+};
+
+constexpr CheckmarkLayout kDoneCheckmarkLayout{
+    1.7f,
+    1.0f,
+    5.0f,
+    4.0f,
+    13.0f,
+    4.5f,
+};
+
+constexpr AlertLayout kErrorAlertLayout{
+    1.6f,
+    7.0f,
+    7.0f,
+    14.0f,
+    6.0f,
+    2.0f,
+    2.0f,
+    6.6f,
+    4.0f,
+    0.8f,
+};
 
 Gdiplus::Color ColorWithOpacity(BYTE red, BYTE green, BYTE blue, float alpha, float opacity) {
     const int scaledAlpha = std::clamp(static_cast<int>(alpha * opacity * 255.0f), 0, 255);
     return Gdiplus::Color(static_cast<BYTE>(scaledAlpha), red, green, blue);
+}
+
+Gdiplus::Color ColorWithOpacity(const RgbColor& color, float alpha, float opacity) {
+    return ColorWithOpacity(color.red, color.green, color.blue, alpha, opacity);
 }
 
 void AddRoundedRectangle(Gdiplus::GraphicsPath& path, const Gdiplus::RectF& rect, float radius) {
@@ -224,7 +401,7 @@ void StatusPill::PostAmplitudeSample(float rms) noexcept {
         return;
     }
 
-    const int encodedAmplitude = std::clamp(static_cast<int>(rms * 10000.0f), 0, 10000);
+    const int encodedAmplitude = std::clamp(static_cast<int>(rms * static_cast<float>(kAmplitudeEncodingScale)), 0, kAmplitudeEncodingScale);
     PostMessageW(window_, kAmplitudeMessage, static_cast<WPARAM>(encodedAmplitude), 0);
 }
 
@@ -236,7 +413,7 @@ void StatusPill::Reanchor() {
     const int width = std::max(
         Scale(kBaseMinimumPillWidth),
         (Scale(kBasePaddingX) * 2) + Scale(kBaseAnchorSize) + Scale(kBaseAnchorGap) +
-            Scale(kBaseSeparatorGap) + Scale(1) + Scale(kBaseSeparatorGap) + Scale(kBaseStateSlotWidth));
+            Scale(kBaseSeparatorGap) + Scale(kBaseSeparatorWidth) + Scale(kBaseSeparatorGap) + Scale(kBaseStateSlotWidth));
     const int height = Scale(kBasePillHeight);
     const RECT windowRect = CalculateWindowRect(width, height);
     SetWindowPos(
@@ -288,7 +465,7 @@ LRESULT StatusPill::HandleMessage(UINT message, WPARAM wordParam, LPARAM longPar
         return 0;
 
     case kAmplitudeMessage:
-        HandleAmplitudeSample(static_cast<float>(wordParam) / 10000.0f);
+        HandleAmplitudeSample(static_cast<float>(wordParam) / static_cast<float>(kAmplitudeEncodingScale));
         return 0;
     }
 
@@ -411,18 +588,19 @@ void StatusPill::DrawPill(HDC memoryDc, int width, int height, float opacity) {
     graphics.Clear(Gdiplus::Color(0, 0, 0, 0));
 
     const bool isError = state_ == StatusPillState::Error;
-    const Gdiplus::RectF bounds(0.5f, 0.5f, static_cast<float>(width) - 1.0f, static_cast<float>(height) - 1.0f);
+    const PillPalette& palette = isError ? kErrorPillPalette : kDefaultPillPalette;
+    const Gdiplus::RectF bounds(
+        kPillBoundsInset,
+        kPillBoundsInset,
+        static_cast<float>(width) - kPillBoundsTrim,
+        static_cast<float>(height) - kPillBoundsTrim);
     Gdiplus::GraphicsPath backgroundPath;
-    AddRoundedRectangle(backgroundPath, bounds, ScaleF(14.0f));
+    AddRoundedRectangle(backgroundPath, bounds, ScaleF(kPillCornerRadius));
 
-    const auto fillColor = isError
-        ? ColorWithOpacity(239, 68, 68, 0.12f, opacity)
-        : ColorWithOpacity(28, 28, 30, 0.92f, opacity);
-    const auto borderColor = isError
-        ? ColorWithOpacity(239, 68, 68, 0.30f, opacity)
-        : ColorWithOpacity(255, 255, 255, 0.14f, opacity);
+    const auto fillColor = ColorWithOpacity(palette.fillColor, palette.fillAlpha, opacity);
+    const auto borderColor = ColorWithOpacity(palette.borderColor, palette.borderAlpha, opacity);
     Gdiplus::SolidBrush fillBrush(fillColor);
-    Gdiplus::Pen borderPen(borderColor, ScaleF(0.5f));
+    Gdiplus::Pen borderPen(borderColor, ScaleF(kBorderPenWidth));
     graphics.FillPath(&fillBrush, &backgroundPath);
     graphics.DrawPath(&borderPen, &backgroundPath);
 
@@ -439,13 +617,11 @@ void StatusPill::DrawPill(HDC memoryDc, int width, int height, float opacity) {
 
     const float separatorX = anchorX + anchorSize + ScaleF(static_cast<float>(kBaseSeparatorGap));
     const float separatorHeight = ScaleF(static_cast<float>(kBaseSeparatorHeight));
-    const auto separatorColor = isError
-        ? ColorWithOpacity(239, 68, 68, 0.30f, opacity)
-        : ColorWithOpacity(255, 255, 255, 0.18f, opacity);
-    Gdiplus::Pen separatorPen(separatorColor, ScaleF(1.0f));
+    const auto separatorColor = ColorWithOpacity(palette.separatorColor, palette.separatorAlpha, opacity);
+    Gdiplus::Pen separatorPen(separatorColor, ScaleF(static_cast<float>(kBaseSeparatorWidth)));
     graphics.DrawLine(&separatorPen, separatorX, centerY - separatorHeight / 2.0f, separatorX, centerY + separatorHeight / 2.0f);
 
-    const float slotX = separatorX + ScaleF(1.0f) + ScaleF(static_cast<float>(kBaseSeparatorGap));
+    const float slotX = separatorX + ScaleF(static_cast<float>(kBaseSeparatorWidth)) + ScaleF(static_cast<float>(kBaseSeparatorGap));
 
     if (state_ == StatusPillState::Recording) {
         const auto now = Clock::now();
@@ -458,15 +634,15 @@ void StatusPill::DrawPill(HDC memoryDc, int width, int height, float opacity) {
             : kMeterReleaseAlpha;
         displayedAmplitude_ += (targetAmplitude - displayedAmplitude_) * smoothingAlpha;
 
-        constexpr std::array<float, 5> kBarProfile = {0.42f, 0.68f, 1.0f, 0.68f, 0.42f};
-        const float barWidth = ScaleF(3.0f);
-        const float barGap = ScaleF(2.5f);
-        const float minHeight = ScaleF(1.75f);
-        const float maxHeight = ScaleF(18.0f);
-        Gdiplus::SolidBrush recordingBrush(ColorWithOpacity(239, 68, 68, 1.0f, opacity));
+        const float barWidth = ScaleF(kRecordingMeterLayout.barWidth);
+        const float barGap = ScaleF(kRecordingMeterLayout.barGap);
+        const float minHeight = ScaleF(kRecordingMeterLayout.minHeight);
+        const float maxHeight = ScaleF(kRecordingMeterLayout.maxHeight);
+        Gdiplus::SolidBrush recordingBrush(ColorWithOpacity(kErrorRgb, 1.0f, opacity));
 
-        for (size_t index = 0; index < kBarProfile.size(); ++index) {
-            const float profile = kBarProfile[index] + ((1.0f - kBarProfile[index]) * displayedAmplitude_);
+        for (size_t index = 0; index < kRecordingMeterLayout.barProfile.size(); ++index) {
+            const float profile = kRecordingMeterLayout.barProfile[index] +
+                ((1.0f - kRecordingMeterLayout.barProfile[index]) * displayedAmplitude_);
             const float barLevel = std::clamp(displayedAmplitude_ * profile, 0.0f, 1.0f);
             const float barHeight = minHeight + ((maxHeight - minHeight) * barLevel);
             const float x = slotX + static_cast<float>(index) * (barWidth + barGap);
@@ -480,25 +656,26 @@ void StatusPill::DrawPill(HDC memoryDc, int width, int height, float opacity) {
 
     if (state_ == StatusPillState::Transcribing) {
         const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - stateStarted_).count();
-        const float pulsePhase = static_cast<float>(elapsed) / 220.0f;
-        const auto accentColor = ColorWithOpacity(245, 158, 11, 1.0f, opacity);
-        const auto textColor = ColorWithOpacity(255, 255, 255, 0.72f, opacity);
+        const float pulsePhase = static_cast<float>(elapsed) / kTranscribingLayout.pulsePeriodMs;
+        const auto accentColor = ColorWithOpacity(kWorkingAccentRgb, 1.0f, opacity);
+        const auto textColor = ColorWithOpacity(kNeutralForegroundRgb, kTranscribingLayout.textAlpha, opacity);
         Gdiplus::SolidBrush accentBrush(accentColor);
-        Gdiplus::Pen accentPen(accentColor, ScaleF(1.35f));
+        Gdiplus::Pen accentPen(accentColor, ScaleF(kTranscribingLayout.accentPenWidth));
         accentPen.SetStartCap(Gdiplus::LineCapRound);
         accentPen.SetEndCap(Gdiplus::LineCapRound);
-        Gdiplus::Pen textPen(textColor, ScaleF(1.2f));
+        Gdiplus::Pen textPen(textColor, ScaleF(kTranscribingLayout.textPenWidth));
         textPen.SetStartCap(Gdiplus::LineCapRound);
         textPen.SetEndCap(Gdiplus::LineCapRound);
 
-        constexpr std::array<float, 3> kWaveHeights = {0.48f, 0.92f, 0.62f};
-        const float waveBarWidth = ScaleF(2.2f);
-        const float waveBarGap = ScaleF(1.8f);
-        const float waveMinHeight = ScaleF(4.0f);
-        const float waveMaxHeight = ScaleF(10.0f);
-        for (size_t index = 0; index < kWaveHeights.size(); ++index) {
-            const float animatedScale = 0.78f + 0.22f * std::sin(pulsePhase + static_cast<float>(index) * 0.95f);
-            const float barHeight = waveMinHeight + (waveMaxHeight - waveMinHeight) * kWaveHeights[index] * animatedScale;
+        const float waveBarWidth = ScaleF(kTranscribingLayout.waveBarWidth);
+        const float waveBarGap = ScaleF(kTranscribingLayout.waveBarGap);
+        const float waveMinHeight = ScaleF(kTranscribingLayout.waveMinHeight);
+        const float waveMaxHeight = ScaleF(kTranscribingLayout.waveMaxHeight);
+        for (size_t index = 0; index < kTranscribingLayout.waveHeights.size(); ++index) {
+            const float animatedScale = kTranscribingLayout.waveBaseScale +
+                kTranscribingLayout.waveScaleRange * std::sin(pulsePhase + static_cast<float>(index) * kTranscribingLayout.wavePhaseOffset);
+            const float barHeight = waveMinHeight +
+                (waveMaxHeight - waveMinHeight) * kTranscribingLayout.waveHeights[index] * animatedScale;
             const float x = slotX + static_cast<float>(index) * (waveBarWidth + waveBarGap);
             const float y = centerY - barHeight / 2.0f;
             Gdiplus::GraphicsPath barPath;
@@ -506,51 +683,95 @@ void StatusPill::DrawPill(HDC memoryDc, int width, int height, float opacity) {
             graphics.FillPath(&accentBrush, &barPath);
         }
 
-        const float arrowX = slotX + ScaleF(9.5f);
-        graphics.DrawLine(&accentPen, arrowX, centerY, arrowX + ScaleF(5.0f), centerY);
-        graphics.DrawLine(&accentPen, arrowX + ScaleF(3.1f), centerY - ScaleF(2.5f), arrowX + ScaleF(5.6f), centerY);
-        graphics.DrawLine(&accentPen, arrowX + ScaleF(3.1f), centerY + ScaleF(2.5f), arrowX + ScaleF(5.6f), centerY);
+        const float arrowX = slotX + ScaleF(kTranscribingLayout.arrowXOffset);
+        graphics.DrawLine(&accentPen, arrowX, centerY, arrowX + ScaleF(kTranscribingLayout.arrowShaftLength), centerY);
+        graphics.DrawLine(
+            &accentPen,
+            arrowX + ScaleF(kTranscribingLayout.arrowWingStartX),
+            centerY - ScaleF(kTranscribingLayout.arrowWingYOffset),
+            arrowX + ScaleF(kTranscribingLayout.arrowWingEndX),
+            centerY);
+        graphics.DrawLine(
+            &accentPen,
+            arrowX + ScaleF(kTranscribingLayout.arrowWingStartX),
+            centerY + ScaleF(kTranscribingLayout.arrowWingYOffset),
+            arrowX + ScaleF(kTranscribingLayout.arrowWingEndX),
+            centerY);
 
-        const float textX = slotX + ScaleF(17.5f);
-        graphics.DrawLine(&textPen, textX, centerY - ScaleF(4.0f), textX + ScaleF(8.5f), centerY - ScaleF(4.0f));
-        graphics.DrawLine(&textPen, textX, centerY, textX + ScaleF(11.0f), centerY);
-        graphics.DrawLine(&textPen, textX, centerY + ScaleF(4.0f), textX + ScaleF(6.5f), centerY + ScaleF(4.0f));
+        const float textX = slotX + ScaleF(kTranscribingLayout.textXOffset);
+        graphics.DrawLine(
+            &textPen,
+            textX,
+            centerY - ScaleF(kTranscribingLayout.textLineYOffset),
+            textX + ScaleF(kTranscribingLayout.textTopLength),
+            centerY - ScaleF(kTranscribingLayout.textLineYOffset));
+        graphics.DrawLine(&textPen, textX, centerY, textX + ScaleF(kTranscribingLayout.textMiddleLength), centerY);
+        graphics.DrawLine(
+            &textPen,
+            textX,
+            centerY + ScaleF(kTranscribingLayout.textLineYOffset),
+            textX + ScaleF(kTranscribingLayout.textBottomLength),
+            centerY + ScaleF(kTranscribingLayout.textLineYOffset));
         return;
     }
 
     if (state_ == StatusPillState::Working) {
         const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - stateStarted_).count();
-        const float rotation = static_cast<float>(elapsed % 800) / 800.0f * 360.0f;
-        const float diameter = ScaleF(13.0f);
+        const float rotation =
+            static_cast<float>(elapsed % kWorkingSpinnerLayout.rotationPeriodMs) /
+            static_cast<float>(kWorkingSpinnerLayout.rotationPeriodMs) * 360.0f;
+        const float diameter = ScaleF(kWorkingSpinnerLayout.diameter);
         Gdiplus::RectF spinnerRect(slotX, centerY - diameter / 2.0f, diameter, diameter);
-        Gdiplus::Pen trackPen(ColorWithOpacity(255, 255, 255, 0.15f, opacity), ScaleF(1.5f));
-        Gdiplus::Pen headPen(ColorWithOpacity(245, 158, 11, 1.0f, opacity), ScaleF(1.5f));
+        Gdiplus::Pen trackPen(
+            ColorWithOpacity(kNeutralForegroundRgb, kWorkingSpinnerLayout.trackAlpha, opacity),
+            ScaleF(kWorkingSpinnerLayout.penWidth));
+        Gdiplus::Pen headPen(ColorWithOpacity(kWorkingAccentRgb, 1.0f, opacity), ScaleF(kWorkingSpinnerLayout.penWidth));
         graphics.DrawEllipse(&trackPen, spinnerRect);
-        graphics.DrawArc(&headPen, spinnerRect, rotation, 110.0f);
+        graphics.DrawArc(&headPen, spinnerRect, rotation, kWorkingSpinnerLayout.arcSpanDegrees);
         return;
     }
 
     if (state_ == StatusPillState::Done) {
-        Gdiplus::Pen checkPen(ColorWithOpacity(16, 185, 129, 1.0f, opacity), ScaleF(1.7f));
+        Gdiplus::Pen checkPen(ColorWithOpacity(kDoneAccentRgb, 1.0f, opacity), ScaleF(kDoneCheckmarkLayout.penWidth));
         checkPen.SetStartCap(Gdiplus::LineCapRound);
         checkPen.SetEndCap(Gdiplus::LineCapRound);
-        graphics.DrawLine(&checkPen, slotX + ScaleF(1.0f), centerY, slotX + ScaleF(5.0f), centerY + ScaleF(4.0f));
-        graphics.DrawLine(&checkPen, slotX + ScaleF(5.0f), centerY + ScaleF(4.0f), slotX + ScaleF(13.0f), centerY - ScaleF(4.5f));
+        graphics.DrawLine(
+            &checkPen,
+            slotX + ScaleF(kDoneCheckmarkLayout.startX),
+            centerY,
+            slotX + ScaleF(kDoneCheckmarkLayout.midX),
+            centerY + ScaleF(kDoneCheckmarkLayout.midYOffset));
+        graphics.DrawLine(
+            &checkPen,
+            slotX + ScaleF(kDoneCheckmarkLayout.midX),
+            centerY + ScaleF(kDoneCheckmarkLayout.midYOffset),
+            slotX + ScaleF(kDoneCheckmarkLayout.endX),
+            centerY - ScaleF(kDoneCheckmarkLayout.endYOffset));
         return;
     }
 
     if (state_ == StatusPillState::Error) {
-        Gdiplus::Pen alertPen(ColorWithOpacity(239, 68, 68, 1.0f, opacity), ScaleF(1.6f));
+        Gdiplus::Pen alertPen(ColorWithOpacity(kErrorRgb, 1.0f, opacity), ScaleF(kErrorAlertLayout.penWidth));
         alertPen.SetStartCap(Gdiplus::LineCapRound);
         alertPen.SetEndCap(Gdiplus::LineCapRound);
         const Gdiplus::PointF points[3] = {
-            {slotX + ScaleF(7.0f), centerY - ScaleF(7.0f)},
-            {slotX + ScaleF(14.0f), centerY + ScaleF(6.0f)},
-            {slotX, centerY + ScaleF(6.0f)}
+            {slotX + ScaleF(kErrorAlertLayout.apexX), centerY - ScaleF(kErrorAlertLayout.apexYOffset)},
+            {slotX + ScaleF(kErrorAlertLayout.rightX), centerY + ScaleF(kErrorAlertLayout.baseYOffset)},
+            {slotX, centerY + ScaleF(kErrorAlertLayout.baseYOffset)}
         };
         graphics.DrawPolygon(&alertPen, points, 3);
-        graphics.DrawLine(&alertPen, slotX + ScaleF(7.0f), centerY - ScaleF(2.0f), slotX + ScaleF(7.0f), centerY + ScaleF(2.0f));
-        graphics.DrawEllipse(&alertPen, slotX + ScaleF(6.6f), centerY + ScaleF(4.0f), ScaleF(0.8f), ScaleF(0.8f));
+        graphics.DrawLine(
+            &alertPen,
+            slotX + ScaleF(kErrorAlertLayout.apexX),
+            centerY - ScaleF(kErrorAlertLayout.exclamationTopYOffset),
+            slotX + ScaleF(kErrorAlertLayout.apexX),
+            centerY + ScaleF(kErrorAlertLayout.exclamationBottomYOffset));
+        graphics.DrawEllipse(
+            &alertPen,
+            slotX + ScaleF(kErrorAlertLayout.dotX),
+            centerY + ScaleF(kErrorAlertLayout.dotYOffset),
+            ScaleF(kErrorAlertLayout.dotSize),
+            ScaleF(kErrorAlertLayout.dotSize));
     }
 }
 
@@ -571,7 +792,7 @@ RECT StatusPill::CalculateWindowRect(int width, int height) const {
         workArea = monitorInfo.rcWork;
 
         if (placement_ == StatusPillPlacement::TrayAnchor) {
-            const int gap = Scale(8);
+            const int gap = Scale(kBaseTrayAnchorGap);
             const int workLeft = static_cast<int>(workArea.left);
             const int workTop = static_cast<int>(workArea.top);
             const int workRight = static_cast<int>(workArea.right);
@@ -599,7 +820,7 @@ RECT StatusPill::CalculateWindowRect(int width, int height) const {
         workArea = monitorInfo.rcWork;
     }
 
-    const int margin = Scale(12);
+    const int margin = Scale(kBaseScreenMargin);
     switch (placement_) {
     case StatusPillPlacement::ScreenTopLeft:
         return RECT{workArea.left + margin, workArea.top + margin, workArea.left + margin + width, workArea.top + margin + height};

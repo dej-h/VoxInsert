@@ -1,68 +1,282 @@
 #include "runtime/app_host_internal.h"
+#include "runtime/runtime_config_applier.h"
 
 #include "observability/logging.h"
-#include "security/openai_credential_store.h"
+#include "security/api_credential_store.h"
 #include "ui/settings_dialog.h"
 
+#include <algorithm>
+#include <utility>
+
 namespace voxinsert {
+namespace {
 
-void ConfigureOpenAiCredential(AppContext& context) {
-    std::wstring failureReason;
-    switch (PromptForOpenAiCredential(context.instance, context.window, context.config.transcription, failureReason)) {
-    case OpenAiCredentialPromptResult::Saved:
-        ShowRuntimeInfo(
-            context,
-            L"VoxInsert OpenAI setup",
-            L"The OpenAI API key was saved to Windows Credential Manager.");
-        return;
+constexpr wchar_t kOpenAiCredentialUserName[] = L"openai";
+constexpr wchar_t kMistralCredentialUserName[] = L"mistral";
 
-    case OpenAiCredentialPromptResult::Cancelled:
-        context.logger->info("OpenAI credential onboarding cancelled");
-        return;
-
-    case OpenAiCredentialPromptResult::Failed:
-        ShowRuntimeError(context, L"VoxInsert OpenAI setup failed", failureReason);
-        return;
+std::wstring ProviderDisplayName(std::string_view provider) {
+    if (provider == "mistral") {
+        return L"Mistral";
     }
+
+    return L"OpenAI";
 }
 
-void RemoveOpenAiCredentialFromStore(AppContext& context) {
-    std::wstring prompt = L"Remove the stored OpenAI API key for credential target '";
-    prompt += CredentialTargetLabel(context);
-    prompt += L"'?";
+std::wstring CredentialTargetForProvider(const TranscriptionConfig& config, std::string_view provider) {
+    if (provider == "mistral") {
+        return WideFromUtf8(config.mistral.credentialTarget);
+    }
 
-    if (!context.options.smokeTest) {
-        const int response = MessageBoxW(
-            context.window,
-            prompt.c_str(),
-            L"VoxInsert OpenAI setup",
-            MB_YESNO | MB_ICONQUESTION);
-        if (response != IDYES) {
-            context.logger->info("OpenAI credential removal cancelled");
-            return;
+    return WideFromUtf8(config.openAi.credentialTarget);
+}
+
+std::wstring SelectedCredentialTarget(const TranscriptionConfig& config) {
+    return CredentialTargetForProvider(config, config.provider);
+}
+
+std::wstring CredentialStatusText(
+    std::wstring_view providerName,
+    std::wstring_view targetName,
+    const std::shared_ptr<spdlog::logger>& logger) {
+    bool exists = false;
+    std::wstring failureReason;
+    if (!CheckApiCredentialExists(targetName, exists, failureReason)) {
+        if (logger != nullptr) {
+            logger->warn(
+                "{} credential status check failed for target {}: {}",
+                Utf8FromWide(providerName),
+                Utf8FromWide(std::wstring(targetName)),
+                Utf8FromWide(failureReason));
         }
+
+        return L"Unavailable.";
+    }
+
+    return exists ? L"Present." : L"Missing.";
+}
+
+bool RemoveCredentialIfPresent(std::wstring_view targetName, std::wstring& failureReason) {
+    if (targetName.empty()) {
+        return true;
     }
 
     bool removed = false;
-    std::wstring failureReason;
-    if (!RemoveOpenAiCredential(context.config.transcription, removed, failureReason)) {
-        ShowRuntimeError(context, L"VoxInsert OpenAI setup failed", failureReason);
-        return;
-    }
-
-    if (removed) {
-        ShowRuntimeInfo(
-            context,
-            L"VoxInsert OpenAI setup",
-            L"The stored OpenAI API key was removed from Windows Credential Manager.");
-        return;
-    }
-
-    std::wstring message = L"No stored OpenAI API key was found for credential target '";
-    message += CredentialTargetLabel(context);
-    message += L"'.";
-    ShowRuntimeInfo(context, L"VoxInsert OpenAI setup", message);
+    return RemoveApiCredential(targetName, removed, failureReason);
 }
+
+bool ApplyProviderCredentialChanges(
+    const wchar_t* providerName,
+    std::wstring_view previousTarget,
+    std::wstring_view nextTarget,
+    std::wstring_view credentialUserName,
+    std::wstring_view newApiKey,
+    bool removeCredential,
+    std::wstring& failureReason) {
+    if (removeCredential) {
+        if (!previousTarget.empty() && !RemoveCredentialIfPresent(previousTarget, failureReason)) {
+            return false;
+        }
+
+        if (!nextTarget.empty() && nextTarget != previousTarget && !RemoveCredentialIfPresent(nextTarget, failureReason)) {
+            return false;
+        }
+
+        return true;
+    }
+
+    if (!newApiKey.empty()) {
+        if (!SaveApiCredential(nextTarget, credentialUserName, newApiKey, failureReason)) {
+            failureReason.insert(0, std::wstring(providerName) + L": ");
+            return false;
+        }
+
+        if (!previousTarget.empty() && previousTarget != nextTarget) {
+            std::wstring removeFailureReason;
+            if (!RemoveCredentialIfPresent(previousTarget, removeFailureReason)) {
+                failureReason = providerName;
+                failureReason += L": the API key was saved, but the old credential target could not be cleaned up: ";
+                failureReason += removeFailureReason;
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    if (previousTarget.empty() || previousTarget == nextTarget) {
+        return true;
+    }
+
+    bool previousCredentialExists = false;
+    if (!CheckApiCredentialExists(previousTarget, previousCredentialExists, failureReason)) {
+        failureReason.insert(0, std::wstring(providerName) + L": ");
+        return false;
+    }
+
+    if (!previousCredentialExists) {
+        return true;
+    }
+
+    std::wstring existingSecret;
+    if (!TryReadApiCredentialSecret(previousTarget, existingSecret, failureReason)) {
+        failureReason.insert(0, std::wstring(providerName) + L": ");
+        return false;
+    }
+
+    const bool saveSucceeded = SaveApiCredential(nextTarget, credentialUserName, existingSecret, failureReason);
+    std::fill(existingSecret.begin(), existingSecret.end(), L'\0');
+    existingSecret.clear();
+    if (!saveSucceeded) {
+        failureReason.insert(0, std::wstring(providerName) + L": ");
+        return false;
+    }
+
+    std::wstring removeFailureReason;
+    if (!RemoveCredentialIfPresent(previousTarget, removeFailureReason)) {
+        failureReason = providerName;
+        failureReason += L": the API key was moved to the new credential target, but the old target could not be cleaned up: ";
+        failureReason += removeFailureReason;
+        return false;
+    }
+
+    return true;
+}
+
+bool ApplyCredentialChangesFromDialog(
+    const AppConfig& previousConfig,
+    const AppConfig& nextConfig,
+    const SettingsDialogValues& values,
+    std::wstring& failureReason) {
+    if (!ApplyProviderCredentialChanges(
+            L"OpenAI",
+            WideFromUtf8(previousConfig.transcription.openAi.credentialTarget),
+            WideFromUtf8(nextConfig.transcription.openAi.credentialTarget),
+            kOpenAiCredentialUserName,
+            values.openAiApiKey,
+            values.removeOpenAiApiKey,
+            failureReason)) {
+        return false;
+    }
+
+    if (!ApplyProviderCredentialChanges(
+            L"Mistral",
+            WideFromUtf8(previousConfig.transcription.mistral.credentialTarget),
+            WideFromUtf8(nextConfig.transcription.mistral.credentialTarget),
+            kMistralCredentialUserName,
+            values.mistralApiKey,
+            values.removeMistralApiKey,
+            failureReason)) {
+        return false;
+    }
+
+    return true;
+}
+
+SettingsDialogValues BuildSettingsDialogValues(const AppContext& context) {
+    SettingsDialogValues values{};
+    values.toggleRecordingHotkey = context.config.toggleRecordingHotkey;
+    values.cancelRecordingHotkey = context.config.cancelRecordingHotkey;
+    values.transcriptionProvider = WideFromUtf8(context.config.transcription.provider);
+    values.languageHint = WideFromUtf8(context.config.transcription.languageHint);
+    values.openAiModel = WideFromUtf8(context.config.transcription.openAi.model);
+    values.openAiCredentialTarget = WideFromUtf8(context.config.transcription.openAi.credentialTarget);
+    values.openAiPrompt = WideFromUtf8(context.config.transcription.openAi.prompt);
+    values.openAiCredentialStatus = CredentialStatusText(
+        L"OpenAI",
+        WideFromUtf8(context.config.transcription.openAi.credentialTarget),
+        context.logger);
+    values.mistralModel = WideFromUtf8(context.config.transcription.mistral.model);
+    values.mistralCredentialTarget = WideFromUtf8(context.config.transcription.mistral.credentialTarget);
+    values.mistralContextBias = WideFromUtf8(context.config.transcription.mistral.contextBias);
+    values.mistralCredentialStatus = CredentialStatusText(
+        L"Mistral",
+        WideFromUtf8(context.config.transcription.mistral.credentialTarget),
+        context.logger);
+    values.statusPillPlacement = context.config.ui.statusPillPlacement;
+    values.autoStartWithWindows = context.config.system.autoStartWithWindows;
+    values.showStatusPill = context.config.ui.showStatusPill;
+    values.archiveEnabled = context.config.archive.enabled;
+    values.archivePersistTranscript = context.config.archive.persistTranscript;
+    values.archivePersistAudio = context.config.archive.persistAudio;
+    values.archiveFolderPath = context.config.archive.folderPath;
+    return values;
+}
+
+AppConfig BuildConfigFromSettings(const AppConfig& currentConfig, const SettingsDialogValues& values) {
+    AppConfig nextConfig = currentConfig;
+    nextConfig.toggleRecordingHotkey = values.toggleRecordingHotkey;
+    nextConfig.cancelRecordingHotkey = values.cancelRecordingHotkey;
+    nextConfig.transcription.provider = Utf8FromWide(values.transcriptionProvider);
+    nextConfig.transcription.languageHint = Utf8FromWide(values.languageHint);
+    nextConfig.transcription.openAi.model = Utf8FromWide(values.openAiModel);
+    nextConfig.transcription.openAi.credentialTarget = Utf8FromWide(values.openAiCredentialTarget);
+    nextConfig.transcription.openAi.prompt = Utf8FromWide(values.openAiPrompt);
+    nextConfig.transcription.mistral.model = Utf8FromWide(values.mistralModel);
+    nextConfig.transcription.mistral.credentialTarget = Utf8FromWide(values.mistralCredentialTarget);
+    nextConfig.transcription.mistral.contextBias = NormalizeMistralContextBias(Utf8FromWide(values.mistralContextBias));
+    nextConfig.ui.showStatusPill = values.showStatusPill;
+    nextConfig.ui.statusPillPlacement = values.statusPillPlacement;
+    nextConfig.system.autoStartWithWindows = values.autoStartWithWindows;
+    nextConfig.archive.enabled = values.archiveEnabled;
+    nextConfig.archive.persistTranscript = values.archivePersistTranscript;
+    nextConfig.archive.persistAudio = values.archivePersistAudio;
+    nextConfig.archive.folderPath = values.archiveFolderPath.empty() ? DefaultArchiveFolderPath() : values.archiveFolderPath;
+    return nextConfig;
+}
+
+AppSettingsUpdate BuildSettingsUpdate(const AppConfig& config) {
+    AppSettingsUpdate settings{};
+    settings.toggleRecordingHotkey = config.toggleRecordingHotkey;
+    settings.cancelRecordingHotkey = config.cancelRecordingHotkey;
+    settings.transcription = config.transcription;
+    settings.ui = config.ui;
+    settings.system = config.system;
+    settings.archive = config.archive;
+    return settings;
+}
+
+bool RestoreCurrentHotkeys(AppContext& context, std::wstring& failureReason) {
+    return context.hotkeyManager.RegisterHotkeys(
+        context.window,
+        context.config.toggleRecordingHotkey,
+        context.config.cancelRecordingHotkey,
+        failureReason);
+}
+
+bool LoadAndApplyConfig(AppContext& context, std::wstring& failureReason) {
+    AppConfig nextConfig;
+    if (!LoadAppConfig(nextConfig, failureReason)) {
+        return false;
+    }
+
+    return ApplyRuntimeConfig(context, std::move(nextConfig), failureReason);
+}
+
+bool ApplySettingsFromDialog(AppContext& context, const SettingsDialogValues& values, std::wstring& failureReason) {
+    const AppConfig previousConfig = context.config;
+    const AppConfig nextConfig = BuildConfigFromSettings(previousConfig, values);
+    if (!ApplyCredentialChangesFromDialog(previousConfig, nextConfig, values, failureReason)) {
+        return false;
+    }
+
+    if (!ApplyRuntimeConfig(context, nextConfig, failureReason)) {
+        return false;
+    }
+
+    if (SaveAppSettings(context.config, BuildSettingsUpdate(context.config), failureReason)) {
+        return true;
+    }
+
+    std::wstring restoreFailureReason;
+    if (!ApplyRuntimeConfig(context, previousConfig, restoreFailureReason)) {
+        failureReason += L" The previous settings could not be restored: ";
+        failureReason += restoreFailureReason;
+    }
+
+    return false;
+}
+
+} // namespace
 
 void CheckTranscriptionCredentialOnStartup(AppContext& context) {
     if (context.options.smokeTest) {
@@ -71,32 +285,38 @@ void CheckTranscriptionCredentialOnStartup(AppContext& context) {
 
     bool exists = false;
     std::wstring failureReason;
-    if (!CheckOpenAiCredentialExists(context.config.transcription, exists, failureReason)) {
-        ShowRuntimeError(context, L"VoxInsert OpenAI setup failed", failureReason);
+    const std::wstring credentialTarget = SelectedCredentialTarget(context.config.transcription);
+    const std::wstring providerName = ProviderDisplayName(context.config.transcription.provider);
+    if (!CheckApiCredentialExists(credentialTarget, exists, failureReason)) {
+        ShowRuntimeError(context, L"VoxInsert transcription setup failed", failureReason);
         return;
     }
 
     if (exists) {
         context.logger->info(
-            "OpenAI credential found for target {}",
-            Utf8FromWide(CredentialTargetLabel(context)));
+            "{} credential found for target {}",
+            Utf8FromWide(providerName),
+            Utf8FromWide(credentialTarget));
         return;
     }
 
-    std::wstring message = L"No OpenAI API key is stored for credential target '";
-    message += CredentialTargetLabel(context);
-    message += L"'.\n\nWould you like to set it up now?";
+    std::wstring message = L"No ";
+    message += providerName;
+    message += L" API key is stored for credential target '";
+    message += credentialTarget;
+    message += L"'.\n\nWould you like to open Settings now?";
 
     context.logger->warn(
-        "OpenAI credential missing for target {}",
-        Utf8FromWide(CredentialTargetLabel(context)));
+        "{} credential missing for target {}",
+        Utf8FromWide(providerName),
+        Utf8FromWide(credentialTarget));
 
     if (MessageBoxW(
             context.window,
             message.c_str(),
-            L"VoxInsert OpenAI setup",
+            L"VoxInsert transcription setup",
             MB_YESNO | MB_ICONWARNING) == IDYES) {
-        ConfigureOpenAiCredential(context);
+        ShowSettingsDialogFromTray(context);
     }
 }
 
@@ -135,42 +355,11 @@ void ReloadConfigFromTray(AppContext& context, const wchar_t* successMessage) {
         return;
     }
 
-    AppConfig nextConfig;
     std::wstring failureReason;
-    if (!LoadAppConfig(nextConfig, failureReason)) {
+    if (!LoadAndApplyConfig(context, failureReason)) {
         ShowRuntimeError(context, L"VoxInsert config reload failed", failureReason);
         return;
     }
-
-    const AppConfig previousConfig = context.config;
-    if (!context.hotkeyManager.RegisterHotkeys(
-            context.window,
-            nextConfig.toggleRecordingHotkey,
-            nextConfig.cancelRecordingHotkey,
-            failureReason)) {
-        std::wstring restoreFailureReason;
-        if (!context.hotkeyManager.RegisterHotkeys(
-                context.window,
-                previousConfig.toggleRecordingHotkey,
-                previousConfig.cancelRecordingHotkey,
-                restoreFailureReason)) {
-            failureReason += L" The previous hotkeys could not be restored: ";
-            failureReason += restoreFailureReason;
-        }
-
-        ShowRuntimeError(context, L"VoxInsert config reload failed", failureReason);
-        return;
-    }
-
-    context.config = std::move(nextConfig);
-    RecreateStatusPillIfNeeded(context, previousConfig.ui);
-
-    if (!ApplyStartupRegistrationFromConfig(context, failureReason)) {
-        ShowRuntimeError(context, L"VoxInsert startup settings", failureReason);
-        return;
-    }
-
-    ResetTrayStatusToCurrentState(context);
 
     context.logger->info(
         "config reloaded from {}",
@@ -192,12 +381,7 @@ void ShowSettingsDialogFromTray(AppContext& context) {
         return;
     }
 
-    SettingsDialogValues values{};
-    values.toggleRecordingHotkey = context.config.toggleRecordingHotkey;
-    values.cancelRecordingHotkey = context.config.cancelRecordingHotkey;
-    values.statusPillPlacement = context.config.ui.statusPillPlacement;
-    values.autoStartWithWindows = context.config.system.autoStartWithWindows;
-    values.showStatusPill = context.config.ui.showStatusPill;
+    SettingsDialogValues values = BuildSettingsDialogValues(context);
 
     context.hotkeyManager.UnregisterAll(context.window);
     context.settingsDialogOpen = true;
@@ -206,11 +390,7 @@ void ShowSettingsDialogFromTray(AppContext& context) {
 
     if (dialogResult != SettingsDialogResult::Saved) {
         std::wstring restoreFailureReason;
-        if (!context.hotkeyManager.RegisterHotkeys(
-                context.window,
-                context.config.toggleRecordingHotkey,
-                context.config.cancelRecordingHotkey,
-                restoreFailureReason)) {
+        if (!RestoreCurrentHotkeys(context, restoreFailureReason)) {
             ShowRuntimeError(context, L"VoxInsert settings", restoreFailureReason);
             return;
         }
@@ -219,57 +399,14 @@ void ShowSettingsDialogFromTray(AppContext& context) {
         return;
     }
 
-    AppSettingsUpdate settings{};
-    settings.toggleRecordingHotkey = values.toggleRecordingHotkey;
-    settings.cancelRecordingHotkey = values.cancelRecordingHotkey;
-    settings.ui = context.config.ui;
-    settings.system = context.config.system;
-    settings.ui.showStatusPill = values.showStatusPill;
-    settings.ui.statusPillPlacement = values.statusPillPlacement;
-    settings.system.autoStartWithWindows = values.autoStartWithWindows;
-
-    const bool hotkeysChanged =
-        !SameHotkeyBinding(settings.toggleRecordingHotkey, context.config.toggleRecordingHotkey) ||
-        !SameHotkeyBinding(settings.cancelRecordingHotkey, context.config.cancelRecordingHotkey);
-
     std::wstring failureReason;
-    if (hotkeysChanged &&
-        !context.hotkeyManager.RegisterHotkeys(
-            context.window,
-            settings.toggleRecordingHotkey,
-            settings.cancelRecordingHotkey,
-            failureReason)) {
-        std::wstring restoreFailureReason;
-        if (!context.hotkeyManager.RegisterHotkeys(
-                context.window,
-                context.config.toggleRecordingHotkey,
-                context.config.cancelRecordingHotkey,
-                restoreFailureReason)) {
-            failureReason += L" The previous hotkeys could not be restored: ";
-            failureReason += restoreFailureReason;
-        }
-
-        ShowRuntimeError(context, L"VoxInsert settings", failureReason);
-        return;
-    }
-
-    if (!SaveAppSettings(context.config, settings, failureReason)) {
-        std::wstring restoreFailureReason;
-        if (!context.hotkeyManager.RegisterHotkeys(
-                context.window,
-                context.config.toggleRecordingHotkey,
-                context.config.cancelRecordingHotkey,
-                restoreFailureReason)) {
-            failureReason += L" The previous hotkeys could not be restored: ";
-            failureReason += restoreFailureReason;
-        }
-
+    if (!ApplySettingsFromDialog(context, values, failureReason)) {
         ShowRuntimeError(context, L"VoxInsert settings", failureReason);
         return;
     }
 
     context.logger->info("settings saved to {}", Utf8FromWide(context.config.configFilePath));
-    ReloadConfigFromTray(context, L"Settings saved.");
+    ShowRuntimeInfo(context, L"VoxInsert settings", L"Settings saved.");
 }
 
 } // namespace voxinsert

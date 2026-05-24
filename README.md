@@ -74,7 +74,7 @@ On first launch, the app creates `%APPDATA%\VoxInsert\config.json` from [config.
 
 By default, press `F8` once to start recording from the current default microphone, press `Escape` to cancel back to idle, or press `F8` again to stop and write a WAV file under `%TEMP%\VoxInsert`. After transcription succeeds, the app pastes the transcript into whichever text field is currently focused by setting the clipboard temporarily and sending `Ctrl+V`. You can change those bindings and insertion options in `%APPDATA%\VoxInsert\config.json`, then choose `Reload config` from the tray menu while VoxInsert is idle. Reloading re-parses config, re-registers the configured global hotkeys, applies `ui.show_status_pill`, and syncs `system.auto_start_with_windows` with the current user's Windows startup registry entry. The current capture state is logged and reflected in the tray tooltip/menu title as `recording`, `saving recording`, `transcribing`, `inserting`, `inserted`, or an error message.
 
-The tray `Settings...` dialog edits the live-safe settings surface: `hotkeys.toggle_recording`, `hotkeys.cancel_recording`, `system.auto_start_with_windows`, `ui.show_status_pill`, and `ui.status_pill_position`. Pressing Save updates `%APPDATA%\VoxInsert\config.json`, reloads the config, re-registers the selected global hotkeys, updates the status pill setting and placement, and adds or removes the `VoxInsert` value under the current user's Windows `Run` registry key.
+The tray `Settings...` dialog edits the live-safe settings surface: `hotkeys.toggle_recording`, `hotkeys.cancel_recording`, `transcription.prompt`, `system.auto_start_with_windows`, `ui.show_status_pill`, and `ui.status_pill_position`. Pressing Save updates `%APPDATA%\VoxInsert\config.json`, reloads the config, re-registers the selected global hotkeys, updates the transcription prompt, updates the status pill setting and placement, and adds or removes the `VoxInsert` value under the current user's Windows `Run` registry key.
 
 `ui.status_pill_position` supports `tray_anchor`, `screen_top_left`, `screen_top_right`, `screen_bottom_left`, and `screen_bottom_right`. Older configs that still say `bottom_right` are treated as the tray-anchored behavior for compatibility.
 
@@ -130,6 +130,8 @@ If your local execution policy already allows local scripts, you can also run th
 - [scripts/build-debug.ps1](scripts/build-debug.ps1)
 - [scripts/build-release.ps1](scripts/build-release.ps1)
 - [scripts/generate-app-icon.ps1](scripts/generate-app-icon.ps1)
+- [src/archive/archive_service.cpp](src/archive/archive_service.cpp)
+- [src/archive/archive_service.h](src/archive/archive_service.h)
 - [src/audio/audio_recorder.cpp](src/audio/audio_recorder.cpp)
 - [src/audio/audio_recorder.h](src/audio/audio_recorder.h)
 - [src/audio/wav_writer.cpp](src/audio/wav_writer.cpp)

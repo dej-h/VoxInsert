@@ -5,6 +5,7 @@
   "dependencies": [
     "portaudio",
     "cpr",
+    "libopusenc",
     "nlohmann-json",
     "spdlog"
   ]

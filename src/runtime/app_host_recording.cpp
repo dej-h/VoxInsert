@@ -1,9 +1,7 @@
 #include "runtime/app_host_internal.h"
+#include "runtime/post_recording_workflow.h"
 
 #include "observability/logging.h"
-
-#include <exception>
-#include <vector>
 
 namespace voxinsert {
 
@@ -27,72 +25,52 @@ void StartRecording(AppContext& context) {
 }
 
 void RunPostRecordingPipeline(AppContext& context) noexcept {
-    try {
-        std::vector<int16_t> samples;
-        std::wstring failureReason;
-        if (!context.audioRecorder.Stop(samples, failureReason)) {
-            CompletePostRecordingWithError(context, L"VoxInsert recording error", failureReason);
-            return;
-        }
+    const PostRecordingWorkflowResult result = RunPostRecordingWorkflow({
+        .audioRecorder = &context.audioRecorder,
+        .wavWriter = &context.wavWriter,
+        .audioConfig = &context.config.audio,
+        .transcriptionClient = &context.transcriptionClient,
+        .transcriptionConfig = &context.config.transcription,
+        .textInjector = &context.textInjector,
+        .insertionConfig = &context.config.insertion,
+        .archiveService = &context.archiveService,
+        .archiveConfig = &context.config.archive,
+        .logger = context.logger,
+        .ownerWindow = context.window,
+        .smokeTest = context.options.smokeTest,
+        .isShutdownRequested = [&context]() { return context.shutdownRequested.load(); },
+        .onPhaseChanged = [&context](PostRecordingPhase phase) {
+            AppState nextState = AppState::Transcribing;
+            if (phase == PostRecordingPhase::Inserting) {
+                nextState = AppState::Inserting;
+            }
 
-        std::filesystem::path wavPath;
-        if (!context.wavWriter.WritePcm16Mono(samples, context.config.audio.sampleRate, wavPath, failureReason)) {
-            CompletePostRecordingWithError(context, L"VoxInsert WAV error", failureReason);
-            return;
-        }
+            PostMessageW(
+                context.window,
+                kPostRecordingPhaseMessage,
+                static_cast<WPARAM>(static_cast<int>(nextState)),
+                0);
+        },
+    });
 
-        StoreLastRecordingPath(context, wavPath);
-        context.logger->info("recording written to {}", Utf8FromWide(wavPath.wstring()));
-
-        if (context.options.smokeTest) {
-            context.logger->info("smoke-test: skipping transcription upload");
-            CompletePostRecordingSuccessfully(context, false);
-            return;
-        }
-
-        if (context.shutdownRequested) {
-            return;
-        }
-
-        PostMessageW(context.window, kPostRecordingPhaseMessage, static_cast<WPARAM>(static_cast<int>(AppState::Transcribing)), 0);
-
-        std::string transcript;
-        if (!context.transcriptionClient.Transcribe(context.config.transcription, wavPath, transcript, failureReason)) {
-            CompletePostRecordingWithError(context, L"VoxInsert transcription error", failureReason);
-            return;
-        }
-
-        context.logger->info("transcription text: {}", transcript);
-
-        const std::wstring transcriptWide = WideFromUtf8(transcript);
-        StoreLastTranscript(context, transcriptWide);
-
-        if (context.shutdownRequested) {
-            return;
-        }
-
-        PostMessageW(context.window, kPostRecordingPhaseMessage, static_cast<WPARAM>(static_cast<int>(AppState::Inserting)), 0);
-
-        if (!context.textInjector.InsertText(context.window, context.config.insertion, transcriptWide, failureReason)) {
-            CompletePostRecordingWithError(context, L"VoxInsert insertion error", failureReason);
-            return;
-        }
-
-        context.logger->info("transcription inserted into the focused text field via clipboard paste");
-        CompletePostRecordingSuccessfully(context, true);
+    if (result.hasRecordingPath) {
+        StoreLastRecordingPath(context, result.recordingPath);
     }
-    catch (const std::exception& exception) {
-        CompletePostRecordingWithError(
-            context,
-            L"VoxInsert transcription error",
-            L"Unexpected background transcription failure: " + WideFromUtf8(exception.what()));
+
+    if (result.hasTranscript) {
+        StoreLastTranscript(context, result.transcript);
     }
-    catch (...) {
-        CompletePostRecordingWithError(
-            context,
-            L"VoxInsert transcription error",
-            L"Unexpected background transcription failure.");
+
+    if (result.status == PostRecordingWorkflowStatus::Cancelled) {
+        return;
     }
+
+    if (result.status == PostRecordingWorkflowStatus::Failed) {
+        CompletePostRecordingWithError(context, result.errorTitle, result.failureReason);
+        return;
+    }
+
+    CompletePostRecordingSuccessfully(context, result.showDone);
 }
 
 void StopRecordingAndWriteWav(AppContext& context) {

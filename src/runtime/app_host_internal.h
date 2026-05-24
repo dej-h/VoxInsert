@@ -2,6 +2,7 @@
 
 #include "runtime/app_host.h"
 
+#include "archive/archive_service.h"
 #include "audio/audio_recorder.h"
 #include "audio/wav_writer.h"
 #include "config/app_config.h"
@@ -29,8 +30,6 @@ inline constexpr UINT kTrayCallbackMessage = WM_APP + 1;
 inline constexpr UINT kPostRecordingPhaseMessage = WM_APP + 2;
 inline constexpr UINT kPostRecordingCompleteMessage = WM_APP + 3;
 inline constexpr UINT_PTR kTrayStatusResetTimerId = 2;
-inline constexpr UINT kTrayMenuCommandSetOpenAiKey = 1001;
-inline constexpr UINT kTrayMenuCommandRemoveOpenAiKey = 1002;
 inline constexpr UINT kTrayMenuCommandQuit = 1003;
 inline constexpr UINT kTrayMenuCommandReloadConfig = 1004;
 inline constexpr UINT kTrayMenuCommandSettings = 1005;
@@ -77,6 +76,7 @@ struct AppContext {
     HotkeyManager hotkeyManager;
     TextInjector textInjector;
     TranscriptionClient transcriptionClient;
+    ArchiveService archiveService;
     StatusPill statusPill;
     WavWriter wavWriter;
     std::thread postRecordingWorker;
@@ -125,10 +125,7 @@ bool HasLastTranscript(AppContext& context);
 bool OpenPathInExplorer(HWND ownerWindow, const std::filesystem::path& path, std::wstring& failureReason);
 void CompletePostRecordingWithError(AppContext& context, std::wstring errorTitle, std::wstring failureReason);
 void CompletePostRecordingSuccessfully(AppContext& context, bool showDone);
-std::wstring CredentialTargetLabel(const AppContext& context);
 bool ApplyStartupRegistrationFromConfig(AppContext& context, std::wstring& failureReason);
-void ConfigureOpenAiCredential(AppContext& context);
-void RemoveOpenAiCredentialFromStore(AppContext& context);
 void CheckTranscriptionCredentialOnStartup(AppContext& context);
 void StartRecording(AppContext& context);
 void CopyLastTranscriptFromTray(AppContext& context);

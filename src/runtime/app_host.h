@@ -12,6 +12,7 @@ namespace voxinsert {
 struct AppHostOptions {
     // Exercises the tray host and placeholder hotkey state machine without manual input.
     bool smokeTest = false;
+    bool archiveSmokeTest = false;
 };
 
 AppHostOptions ParseAppHostOptions();

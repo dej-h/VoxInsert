@@ -14,7 +14,13 @@ find_package(nlohmann_json CONFIG REQUIRED)
 find_package(portaudio CONFIG REQUIRED)
 find_package(spdlog CONFIG REQUIRED)
 
+find_path(OPUSENC_INCLUDE_DIR NAMES opus/opusenc.h REQUIRED)
+find_library(OPUSENC_LIBRARY NAMES opusenc REQUIRED)
+find_path(OPUS_INCLUDE_DIR NAMES opus/opus.h REQUIRED)
+find_library(OPUS_LIBRARY NAMES opus REQUIRED)
+
 add_executable(VoiceAgentTyper WIN32
+    src/archive/archive_service.cpp
     src/audio/audio_recorder.cpp
     src/audio/wav_writer.cpp
     src/config/app_config.cpp
@@ -26,10 +32,14 @@ add_executable(VoiceAgentTyper WIN32
     src/runtime/app_host_recording.cpp
     src/runtime/app_host_runtime.cpp
     src/runtime/app_host_settings.cpp
+    src/runtime/post_recording_workflow.cpp
+    src/runtime/runtime_config_applier.cpp
     src/runtime/app_host_tray.cpp
     src/runtime/startup_registration.cpp
-    src/security/openai_credential_store.cpp
+    src/security/api_credential_store.cpp
     src/testing/app_host_smoke_test.cpp
+    src/transcription/mistral_transcription_service.cpp
+    src/transcription/openai_transcription_service.cpp
     src/transcription/transcription_client.cpp
     src/ui/settings_dialog.cpp
     src/ui/status_pill.cpp
@@ -38,6 +48,8 @@ add_executable(VoiceAgentTyper WIN32
 
 target_include_directories(VoiceAgentTyper PRIVATE
     src
+    ${OPUSENC_INCLUDE_DIR}
+    ${OPUS_INCLUDE_DIR}
 )
 
 target_link_libraries(VoiceAgentTyper PRIVATE
@@ -47,6 +59,8 @@ target_link_libraries(VoiceAgentTyper PRIVATE
     Gdiplus
     nlohmann_json::nlohmann_json
     Ole32
+    ${OPUSENC_LIBRARY}
+    ${OPUS_LIBRARY}
     portaudio
     Shell32
     spdlog::spdlog

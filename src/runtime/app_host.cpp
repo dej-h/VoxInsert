@@ -6,7 +6,9 @@
 #include <shellapi.h>
 
 #include <cwchar>
+#include <filesystem>
 #include <string_view>
+#include <vector>
 
 namespace voxinsert {
 namespace {
@@ -185,16 +187,6 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wordParam, LPARAM 
                 OpenLastRecordingFolderFromTray(*context);
                 return 0;
 
-            case kTrayMenuCommandSetOpenAiKey:
-                context->logger->info("tray Set OpenAI Key selected");
-                ConfigureOpenAiCredential(*context);
-                return 0;
-
-            case kTrayMenuCommandRemoveOpenAiKey:
-                context->logger->info("tray Remove OpenAI Key selected");
-                RemoveOpenAiCredentialFromStore(*context);
-                return 0;
-
             case kTrayMenuCommandQuit:
                 context->logger->info("tray Quit selected");
                 DestroyWindow(window);
@@ -240,6 +232,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wordParam, LPARAM 
                 context->audioRecorder.Cancel();
             }
             JoinPostRecordingWorker(*context);
+            context->archiveService.Shutdown();
             context->statusPill.Destroy();
             context->hotkeyManager.UnregisterAll(window);
             context->logger->info("global hotkeys unregistered");
@@ -319,6 +312,95 @@ int RunMessageLoop(const std::shared_ptr<spdlog::logger>& logger) {
     }
 }
 
+bool IsNonEmptyFile(const std::filesystem::path& path) {
+    std::error_code errorCode;
+    return std::filesystem::is_regular_file(path, errorCode) &&
+           !errorCode &&
+           std::filesystem::file_size(path, errorCode) > 0 &&
+           !errorCode;
+}
+
+bool RunArchiveSmokeTest(const std::shared_ptr<spdlog::logger>& logger) {
+    std::error_code errorCode;
+    const std::filesystem::path root = std::filesystem::temp_directory_path(errorCode) / L"VoxInsertArchiveSmoke";
+    if (errorCode) {
+        logger->error("archive-smoke-test: temp_directory_path failed: {}", errorCode.message());
+        return false;
+    }
+
+    std::filesystem::remove_all(root, errorCode);
+    std::filesystem::create_directories(root, errorCode);
+    if (errorCode) {
+        logger->error("archive-smoke-test: create_directories failed: {}", errorCode.message());
+        return false;
+    }
+
+    AudioConfig audio{};
+    audio.sampleRate = 16000;
+    audio.channelCount = 1;
+
+    ArchiveConfig archive{};
+    archive.enabled = true;
+    archive.persistAudio = true;
+    archive.persistTranscript = true;
+    archive.folderPath = root.wstring();
+    archive.opusBitrateBps = 24000;
+
+    TranscriptionConfig transcription{};
+    transcription.provider = "openai";
+    transcription.openAi.model = "archive-smoke-test";
+
+    std::vector<int16_t> samples(static_cast<size_t>(audio.sampleRate));
+    for (size_t index = 0; index < samples.size(); ++index) {
+        samples[index] = ((index / 80) % 2 == 0) ? 1200 : -1200;
+    }
+
+    ArchiveService service;
+    service.Enqueue(ArchiveRequest{
+        .archive = archive,
+        .audio = audio,
+        .transcription = transcription,
+        .samples = std::move(samples),
+        .transcriptUtf8 = "archive smoke test transcript",
+        .insertionSucceeded = true,
+        .logger = logger,
+    });
+    service.Shutdown();
+
+    bool foundOpus = false;
+    bool foundText = false;
+    bool foundJson = false;
+    for (const auto& entry : std::filesystem::recursive_directory_iterator(root, errorCode)) {
+        if (errorCode) {
+            break;
+        }
+
+        const std::filesystem::path path = entry.path();
+        if (path.extension() == L".opus" && IsNonEmptyFile(path)) {
+            foundOpus = true;
+        }
+        else if (path.extension() == L".txt" && IsNonEmptyFile(path)) {
+            foundText = true;
+        }
+        else if (path.extension() == L".json" && IsNonEmptyFile(path)) {
+            foundJson = true;
+        }
+    }
+
+    std::filesystem::remove_all(root, errorCode);
+    if (!foundOpus || !foundText || !foundJson) {
+        logger->error(
+            "archive-smoke-test failed: opus={}, text={}, json={}",
+            foundOpus,
+            foundText,
+            foundJson);
+        return false;
+    }
+
+    logger->info("archive-smoke-test passed");
+    return true;
+}
+
 } // namespace
 
 AppHostOptions ParseAppHostOptions() {
@@ -334,6 +416,9 @@ AppHostOptions ParseAppHostOptions() {
         const std::wstring_view argument(arguments[argumentIndex]);
         if (argument == L"--smoke-test") {
             options.smokeTest = true;
+        }
+        else if (argument == L"--archive-smoke-test") {
+            options.archiveSmokeTest = true;
         }
     }
 
@@ -356,6 +441,11 @@ int RunAppHost(
 
     if (context.options.smokeTest) {
         logger->info("running in smoke-test mode");
+    }
+
+    if (context.options.archiveSmokeTest) {
+        logger->info("running archive smoke test");
+        return RunArchiveSmokeTest(logger) ? 0 : 1;
     }
 
     std::wstring configFailureReason;

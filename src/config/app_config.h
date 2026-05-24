@@ -3,6 +3,7 @@
 #include <windows.h>
 
 #include <string>
+#include <string_view>
 
 namespace voxinsert {
 
@@ -27,12 +28,23 @@ struct AudioConfig {
     int maxRecordingSeconds = 300;
 };
 
-struct TranscriptionConfig {
-    std::string provider = "openai";
+struct OpenAiTranscriptionProviderConfig {
     std::string model = "gpt-4o-transcribe";
     std::string credentialTarget = "VoiceAgentTyper/OpenAI";
+    std::string prompt = "The user is dictating technical prompts for coding agents, IDEs, VS Code, GitHub Copilot, Claude Code, Codex, Python, C++, FastAPI, LangChain, OpenAI, Docker, GitHub, APIs, terminals, embeddings, rerankers, and software engineering workflows.";
+};
+
+struct MistralTranscriptionProviderConfig {
+    std::string model = "voxtral-mini-latest";
+    std::string credentialTarget = "VoiceAgentTyper/Mistral";
+    std::string contextBias = "VoxInsert,VS_Code,GitHub_Copilot,Claude_Code,Codex,Python,C++,FastAPI,LangChain,OpenAI,Docker,GitHub,APIs,terminals,embeddings,rerankers";
+};
+
+struct TranscriptionConfig {
+    std::string provider = "openai";
     std::string languageHint = "en";
-    std::string prompt;
+    OpenAiTranscriptionProviderConfig openAi;
+    MistralTranscriptionProviderConfig mistral;
 };
 
 struct InsertionConfig {
@@ -51,11 +63,21 @@ struct SystemConfig {
     bool launchMinimized = true;
 };
 
+struct ArchiveConfig {
+    bool enabled = false;
+    bool persistTranscript = true;
+    bool persistAudio = true;
+    std::wstring folderPath;
+    int opusBitrateBps = 24000;
+};
+
 struct AppSettingsUpdate {
     HotkeyBinding toggleRecordingHotkey;
     HotkeyBinding cancelRecordingHotkey;
+    TranscriptionConfig transcription;
     UiConfig ui;
     SystemConfig system;
+    ArchiveConfig archive;
 };
 
 // Keeps the small amount of runtime configuration the current milestone actually uses.
@@ -68,9 +90,12 @@ struct AppConfig {
     InsertionConfig insertion;
     UiConfig ui;
     SystemConfig system;
+    ArchiveConfig archive;
 };
 
 AppConfig DefaultAppConfig();
+std::wstring DefaultArchiveFolderPath();
+std::string NormalizeMistralContextBias(std::string_view rawContextBias);
 bool LoadAppConfig(AppConfig& config, std::wstring& failureReason);
 bool SaveAppSettings(const AppConfig& config, const AppSettingsUpdate& settings, std::wstring& failureReason);
 bool TryCreateHotkeyBinding(UINT modifiers, UINT virtualKey, HotkeyBinding& binding, std::wstring& failureReason);

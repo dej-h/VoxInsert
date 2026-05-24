@@ -55,6 +55,7 @@ Everything else is later.
 | HTTP | `cpr` | Simple C++ wrapper around libcurl; good enough for this app. |
 | JSON | `nlohmann/json` | Simple, stable, and common. |
 | Audio | PortAudio | Faster than raw WASAPI for the first working version. |
+| Audio archive compression | `libopusenc` | High-level Ogg Opus writer for compact local clip archives. |
 | Secrets | Windows Credential Manager | Correct pattern for user-entered API keys in a Windows UI app. |
 | Config | JSON under `%APPDATA%` | Normal settings belong in app data, not install/build directory. |
 | Text insertion | Clipboard paste + `Ctrl+V` | Fast and reliable for long prompts. |
@@ -276,7 +277,9 @@ Use manifest mode. Do not require users or coding agents to mutate global vcpkg 
   "dependencies": [
     "portaudio",
     "cpr",
-    "nlohmann-json"
+    "libopusenc",
+    "nlohmann-json",
+    "spdlog"
   ]
 }
 ```
@@ -464,10 +467,17 @@ if config does not exist:
   },
   "transcription": {
     "provider": "openai",
-    "model": "gpt-4o-transcribe",
-    "credential_target": "VoiceAgentTyper/OpenAI",
     "language_hint": "en",
-    "prompt": "The user is dictating technical prompts for coding agents, IDEs, VS Code, GitHub Copilot, Claude Code, Codex, Python, C++, FastAPI, LangChain, OpenAI, Docker, GitHub, APIs, terminals, embeddings, rerankers, and software engineering workflows."
+    "openai": {
+      "model": "gpt-4o-transcribe",
+      "credential_target": "VoiceAgentTyper/OpenAI",
+      "prompt": "The user is dictating technical prompts for coding agents, IDEs, VS Code, GitHub Copilot, Claude Code, Codex, Python, C++, FastAPI, LangChain, OpenAI, Docker, GitHub, APIs, terminals, embeddings, rerankers, and software engineering workflows."
+    },
+    "mistral": {
+      "model": "voxtral-mini-latest",
+      "credential_target": "VoiceAgentTyper/Mistral",
+      "context_bias": "VoxInsert,VS Code,GitHub Copilot,Claude Code,Codex,Python,C++,FastAPI,LangChain,OpenAI,Docker,GitHub,APIs,terminals,embeddings,rerankers"
+    }
   },
   "insertion": {
     "mode": "clipboard_paste",

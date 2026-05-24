@@ -1,5 +1,7 @@
 #pragma once
 
+#include "config/app_config.h"
+
 #include <windows.h>
 
 #include <array>
@@ -15,6 +17,7 @@ namespace voxinsert {
 enum class StatusPillState {
     Idle,
     Recording,
+    Transcribing,
     Working,
     Done,
     Error
@@ -30,6 +33,7 @@ public:
         HWND ownerWindow,
         UINT trayIconId,
         bool enabled,
+        StatusPillPlacement placement,
         const std::shared_ptr<spdlog::logger>& logger,
         std::wstring& failureReason);
 
@@ -64,6 +68,7 @@ private:
     bool enabled_ = false;
     bool visible_ = false;
     bool fadingOut_ = false;
+    StatusPillPlacement placement_ = StatusPillPlacement::TrayAnchor;
     StatusPillState state_ = StatusPillState::Idle;
     std::wstring errorText_;
     std::shared_ptr<spdlog::logger> logger_;
@@ -73,13 +78,9 @@ private:
     std::chrono::steady_clock::time_point fadeStarted_{};
     std::chrono::steady_clock::time_point holdUntil_{};
     std::chrono::steady_clock::time_point lastAmplitudeSample_{};
-    std::chrono::steady_clock::time_point lastAudibleSample_{};
-    std::chrono::steady_clock::time_point amplitudeBucketStarted_{};
     std::chrono::milliseconds fadeDuration_{0};
-    float amplitudeBucketSum_ = 0.0f;
-    unsigned int amplitudeBucketCount_ = 0;
-    std::array<float, 5> amplitudeBars_{};
-    std::array<float, 5> smoothedBars_{};
+    float liveAmplitude_ = 0.0f;
+    float displayedAmplitude_ = 0.0f;
 };
 
 } // namespace voxinsert

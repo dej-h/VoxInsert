@@ -7,6 +7,7 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <cctype>
 #include <filesystem>
 #include <fstream>
 #include <string_view>
@@ -28,10 +29,17 @@ constexpr char kFallbackConfigJson[] = R"json({
   },
   "transcription": {
     "provider": "openai",
-    "model": "gpt-4o-transcribe",
-    "credential_target": "VoiceAgentTyper/OpenAI",
     "language_hint": "en",
-    "prompt": "The user is dictating technical prompts for coding agents, IDEs, VS Code, GitHub Copilot, Claude Code, Codex, Python, C++, FastAPI, LangChain, OpenAI, Docker, GitHub, APIs, terminals, embeddings, rerankers, and software engineering workflows."
+        "openai": {
+            "model": "gpt-4o-transcribe",
+            "credential_target": "VoiceAgentTyper/OpenAI",
+            "prompt": "The user is dictating technical prompts for coding agents, IDEs, VS Code, GitHub Copilot, Claude Code, Codex, Python, C++, FastAPI, LangChain, OpenAI, Docker, GitHub, APIs, terminals, embeddings, rerankers, and software engineering workflows."
+        },
+        "mistral": {
+            "model": "voxtral-mini-latest",
+            "credential_target": "VoiceAgentTyper/Mistral",
+            "context_bias": "VoxInsert,VS_Code,GitHub_Copilot,Claude_Code,Codex,Python,C++,FastAPI,LangChain,OpenAI,Docker,GitHub,APIs,terminals,embeddings,rerankers"
+        }
   },
   "insertion": {
     "mode": "clipboard_paste",
@@ -54,6 +62,13 @@ constexpr char kFallbackConfigJson[] = R"json({
   "system": {
         "auto_start_with_windows": false,
     "launch_minimized": true
+    },
+    "archive": {
+        "enabled": false,
+        "persist_transcript": true,
+        "persist_audio": true,
+        "folder": "",
+        "opus_bitrate_bps": 24000
   }
 })json";
 
@@ -105,6 +120,77 @@ std::wstring Trim(std::wstring_view value) {
     }
 
     return std::wstring(value.substr(start, end - start));
+}
+
+std::string NormalizeMistralContextBiasEntry(std::string_view entry) {
+    std::string normalized;
+    normalized.reserve(entry.size());
+
+    bool needsUnderscore = false;
+    for (char character : entry) {
+        if (std::isspace(static_cast<unsigned char>(character)) != 0) {
+            if (!normalized.empty()) {
+                needsUnderscore = true;
+            }
+            continue;
+        }
+
+        if (needsUnderscore) {
+            normalized.push_back('_');
+            needsUnderscore = false;
+        }
+
+        normalized.push_back(character);
+    }
+
+    return normalized;
+}
+
+std::string NormalizeMistralContextBiasImpl(std::string_view rawContextBias) {
+    std::vector<std::string> entries;
+    std::string currentEntry;
+
+    const auto flushEntry = [&entries, &currentEntry]() {
+        const std::string normalizedEntry = NormalizeMistralContextBiasEntry(currentEntry);
+        if (!normalizedEntry.empty()) {
+            entries.push_back(normalizedEntry);
+        }
+        currentEntry.clear();
+    };
+
+    for (char character : rawContextBias) {
+        if (character == ',' || character == ';' || character == '\r' || character == '\n') {
+            flushEntry();
+            continue;
+        }
+
+        currentEntry.push_back(character);
+    }
+
+    flushEntry();
+
+    std::string normalized;
+    for (size_t index = 0; index < entries.size(); ++index) {
+        if (index != 0) {
+            normalized.push_back(',');
+        }
+        normalized += entries[index];
+    }
+
+    return normalized;
+}
+
+std::wstring BuildDefaultArchiveFolderPath() {
+    PWSTR localAppDataPath = nullptr;
+    const HRESULT knownFolderResult = SHGetKnownFolderPath(FOLDERID_LocalAppData, KF_FLAG_CREATE, nullptr, &localAppDataPath);
+    if (FAILED(knownFolderResult)) {
+        return {};
+    }
+
+    std::wstring archivePath = localAppDataPath;
+    CoTaskMemFree(localAppDataPath);
+    archivePath += L"\\VoxInsert\\Archive";
+    return archivePath;
 }
 
 std::filesystem::path GetExecutableDirectory() {
@@ -216,6 +302,7 @@ bool ParsePrimaryKeyToken(
             displayName.assign(1, character);
             return true;
         }
+
     }
 
     if (upperToken.size() >= 2 && upperToken[0] == L'F') {
@@ -473,6 +560,30 @@ bool EnsureConfigSection(json& root, const char* sectionName, std::wstring& fail
     return false;
 }
 
+bool EnsureNestedConfigSection(json& root, const char* sectionName, const char* nestedSectionName, std::wstring& failureReason) {
+    if (!EnsureConfigSection(root, sectionName, failureReason)) {
+        return false;
+    }
+
+    auto& section = root[sectionName];
+    auto nestedIt = section.find(nestedSectionName);
+    if (nestedIt == section.end()) {
+        section[nestedSectionName] = json::object();
+        return true;
+    }
+
+    if (nestedIt->is_object()) {
+        return true;
+    }
+
+    failureReason = L"Config section ";
+    failureReason += WideFromUtf8(sectionName);
+    failureReason += L".";
+    failureReason += WideFromUtf8(nestedSectionName);
+    failureReason += L" must be an object.";
+    return false;
+}
+
 bool LoadConfiguredHotkey(
     const json& root,
     const char* fieldName,
@@ -597,6 +708,67 @@ bool LoadConfiguredString(
     return true;
 }
 
+bool LoadConfiguredWideString(
+    const json& root,
+    const char* sectionName,
+    const char* fieldName,
+    std::wstring& value,
+    std::wstring& failureReason) {
+    std::string utf8Value = Utf8FromWide(value);
+    if (!LoadConfiguredString(root, sectionName, fieldName, utf8Value, failureReason)) {
+        return false;
+    }
+
+    value = WideFromUtf8(utf8Value);
+    return true;
+}
+
+bool LoadConfiguredNestedString(
+    const json& root,
+    const char* sectionName,
+    const char* nestedSectionName,
+    const char* fieldName,
+    std::string& value,
+    std::wstring& failureReason) {
+    const auto sectionIt = root.find(sectionName);
+    if (sectionIt == root.end() || !sectionIt->is_object()) {
+        return true;
+    }
+
+    const auto nestedIt = sectionIt->find(nestedSectionName);
+    if (nestedIt == sectionIt->end()) {
+        return true;
+    }
+
+    if (!nestedIt->is_object()) {
+        failureReason = L"Config section ";
+        failureReason += WideFromUtf8(sectionName);
+        failureReason += L".";
+        failureReason += WideFromUtf8(nestedSectionName);
+        failureReason += L" must be an object.";
+        return false;
+    }
+
+    const auto valueIt = nestedIt->find(fieldName);
+    if (valueIt == nestedIt->end()) {
+        return true;
+    }
+
+    if (!valueIt->is_string()) {
+        failureReason = L"Config value ";
+        failureReason += WideFromUtf8(sectionName);
+        failureReason += L".";
+        failureReason += WideFromUtf8(nestedSectionName);
+        failureReason += L".";
+        failureReason += WideFromUtf8(fieldName);
+        failureReason += L" must be a string.";
+        return false;
+    }
+
+    value = valueIt->get<std::string>();
+    return true;
+}
+
 bool LoadConfiguredBoolean(
     const json& root,
     const char* sectionName,
@@ -676,16 +848,43 @@ bool LoadConfiguredSystemSettings(const json& root, SystemConfig& system, std::w
     return true;
 }
 
+bool LoadConfiguredArchiveSettings(const json& root, ArchiveConfig& archive, std::wstring& failureReason) {
+    if (!LoadConfiguredBoolean(root, "archive", "enabled", archive.enabled, failureReason)) {
+        return false;
+    }
+
+    if (!LoadConfiguredBoolean(root, "archive", "persist_transcript", archive.persistTranscript, failureReason)) {
+        return false;
+    }
+
+    if (!LoadConfiguredBoolean(root, "archive", "persist_audio", archive.persistAudio, failureReason)) {
+        return false;
+    }
+
+    if (!LoadConfiguredWideString(root, "archive", "folder", archive.folderPath, failureReason)) {
+        return false;
+    }
+
+    if (!LoadConfiguredPositiveInteger(root, "archive", "opus_bitrate_bps", 6000, archive.opusBitrateBps, failureReason)) {
+        return false;
+    }
+
+    if (archive.folderPath.empty()) {
+        archive.folderPath = DefaultArchiveFolderPath();
+    }
+
+    return true;
+}
+
 bool LoadConfiguredTranscriptionSettings(const json& root, TranscriptionConfig& transcription, std::wstring& failureReason) {
     if (!LoadConfiguredString(root, "transcription", "provider", transcription.provider, failureReason)) {
         return false;
     }
 
-    if (!LoadConfiguredString(root, "transcription", "model", transcription.model, failureReason)) {
-        return false;
-    }
-
-    if (!LoadConfiguredString(root, "transcription", "credential_target", transcription.credentialTarget, failureReason)) {
+    if (transcription.provider != "openai" && transcription.provider != "mistral") {
+        failureReason = L"Unsupported transcription.provider value '";
+        failureReason += WideFromUtf8(transcription.provider);
+        failureReason += L"'. Supported values are openai and mistral.";
         return false;
     }
 
@@ -693,14 +892,49 @@ bool LoadConfiguredTranscriptionSettings(const json& root, TranscriptionConfig& 
         return false;
     }
 
-    if (!LoadConfiguredString(root, "transcription", "prompt", transcription.prompt, failureReason)) {
+    if (!LoadConfiguredNestedString(root, "transcription", "openai", "model", transcription.openAi.model, failureReason)) {
         return false;
+    }
+
+    if (!LoadConfiguredNestedString(root, "transcription", "openai", "credential_target", transcription.openAi.credentialTarget, failureReason)) {
+        return false;
+    }
+
+    if (!LoadConfiguredNestedString(root, "transcription", "openai", "prompt", transcription.openAi.prompt, failureReason)) {
+        return false;
+    }
+
+    if (!LoadConfiguredNestedString(root, "transcription", "mistral", "model", transcription.mistral.model, failureReason)) {
+        return false;
+    }
+
+    if (!LoadConfiguredNestedString(root, "transcription", "mistral", "credential_target", transcription.mistral.credentialTarget, failureReason)) {
+        return false;
+    }
+
+    if (!LoadConfiguredNestedString(root, "transcription", "mistral", "context_bias", transcription.mistral.contextBias, failureReason)) {
+        return false;
+    }
+
+    transcription.mistral.contextBias = NormalizeMistralContextBias(transcription.mistral.contextBias);
+
+    // The audio/transcriptions endpoint currently supports Voxtral Mini Transcribe, not Voxtral Small.
+    if (transcription.mistral.model == "voxtral-small-latest") {
+        transcription.mistral.model = "voxtral-mini-latest";
     }
 
     return true;
 }
 
 } // namespace
+
+std::string NormalizeMistralContextBias(std::string_view rawContextBias) {
+    return NormalizeMistralContextBiasImpl(rawContextBias);
+}
+
+std::wstring DefaultArchiveFolderPath() {
+    return BuildDefaultArchiveFolderPath();
+}
 
 bool TryCreateHotkeyBinding(UINT modifiers, UINT virtualKey, HotkeyBinding& binding, std::wstring& failureReason) {
     if (virtualKey == 0) {
@@ -731,6 +965,7 @@ AppConfig DefaultAppConfig() {
     AppConfig config{};
     config.toggleRecordingHotkey = HotkeyBinding{MOD_NOREPEAT, VK_F8, L"F8"};
     config.cancelRecordingHotkey = HotkeyBinding{MOD_NOREPEAT, VK_ESCAPE, L"Escape"};
+    config.archive.folderPath = DefaultArchiveFolderPath();
     return config;
 }
 
@@ -795,6 +1030,10 @@ bool LoadAppConfig(AppConfig& config, std::wstring& failureReason) {
         return false;
     }
 
+    if (!LoadConfiguredArchiveSettings(root, config.archive, failureReason)) {
+        return false;
+    }
+
     return true;
 }
 
@@ -821,12 +1060,44 @@ bool SaveAppSettings(const AppConfig& config, const AppSettingsUpdate& settings,
         return false;
     }
 
+    if (!EnsureConfigSection(root, "archive", failureReason)) {
+        return false;
+    }
+
+    if (!EnsureConfigSection(root, "transcription", failureReason)) {
+        return false;
+    }
+
+    if (!EnsureNestedConfigSection(root, "transcription", "openai", failureReason)) {
+        return false;
+    }
+
+    if (!EnsureNestedConfigSection(root, "transcription", "mistral", failureReason)) {
+        return false;
+    }
+
     root["hotkeys"]["toggle_recording"] = Utf8FromWide(SerializeHotkeyBinding(settings.toggleRecordingHotkey));
     root["hotkeys"]["cancel_recording"] = Utf8FromWide(SerializeHotkeyBinding(settings.cancelRecordingHotkey));
+    root["transcription"]["provider"] = settings.transcription.provider;
+    root["transcription"]["language_hint"] = settings.transcription.languageHint;
+    root["transcription"].erase("model");
+    root["transcription"].erase("credential_target");
+    root["transcription"].erase("prompt");
+    root["transcription"]["openai"]["model"] = settings.transcription.openAi.model;
+    root["transcription"]["openai"]["credential_target"] = settings.transcription.openAi.credentialTarget;
+    root["transcription"]["openai"]["prompt"] = settings.transcription.openAi.prompt;
+    root["transcription"]["mistral"]["model"] = settings.transcription.mistral.model;
+    root["transcription"]["mistral"]["credential_target"] = settings.transcription.mistral.credentialTarget;
+    root["transcription"]["mistral"]["context_bias"] = NormalizeMistralContextBias(settings.transcription.mistral.contextBias);
     root["ui"]["show_status_pill"] = settings.ui.showStatusPill;
     root["ui"]["status_pill_position"] = StatusPillPlacementToConfigString(settings.ui.statusPillPlacement);
     root["system"]["auto_start_with_windows"] = settings.system.autoStartWithWindows;
     root["system"]["launch_minimized"] = settings.system.launchMinimized;
+    root["archive"]["enabled"] = settings.archive.enabled;
+    root["archive"]["persist_transcript"] = settings.archive.persistTranscript;
+    root["archive"]["persist_audio"] = settings.archive.persistAudio;
+    root["archive"]["folder"] = Utf8FromWide(settings.archive.folderPath);
+    root["archive"]["opus_bitrate_bps"] = settings.archive.opusBitrateBps;
 
     return SaveJsonFile(config.configFilePath, root, failureReason);
 }

@@ -311,10 +311,6 @@ void CompletePostRecordingSuccessfully(AppContext& context, bool showDone) {
     PostMessageW(context.window, kPostRecordingCompleteMessage, 0, 0);
 }
 
-std::wstring CredentialTargetLabel(const AppContext& context) {
-    return WideFromUtf8(context.config.transcription.credentialTarget);
-}
-
 bool ApplyStartupRegistrationFromConfig(AppContext& context, std::wstring& failureReason) {
     if (context.options.smokeTest) {
         return true;
