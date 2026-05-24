@@ -29,6 +29,7 @@ inline constexpr UINT kTrayIconId = 1;
 inline constexpr UINT kTrayCallbackMessage = WM_APP + 1;
 inline constexpr UINT kPostRecordingPhaseMessage = WM_APP + 2;
 inline constexpr UINT kPostRecordingCompleteMessage = WM_APP + 3;
+inline constexpr UINT kOpenSettingsMessage = WM_APP + 4;
 inline constexpr UINT_PTR kTrayStatusResetTimerId = 2;
 inline constexpr UINT kTrayMenuCommandQuit = 1003;
 inline constexpr UINT kTrayMenuCommandReloadConfig = 1004;

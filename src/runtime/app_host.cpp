@@ -102,7 +102,13 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wordParam, LPARAM 
                 ShowRuntimeError(*context, L"VoxInsert startup settings", startupRegistrationFailureReason);
             }
 
-            CheckTranscriptionCredentialOnStartup(*context);
+            if (context->options.openSettingsOnStartup) {
+                context->logger->info("startup requested settings dialog");
+                PostMessageW(window, kOpenSettingsMessage, 0, 0);
+            }
+            else {
+                CheckTranscriptionCredentialOnStartup(*context);
+            }
 
             if (context->options.smokeTest) {
                 if (!context->smokeTest.ArmInitialTimer(window, context->logger)) {
@@ -156,6 +162,12 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wordParam, LPARAM 
     case kPostRecordingCompleteMessage:
         if (context != nullptr && context->logger != nullptr) {
             HandlePostRecordingComplete(*context);
+        }
+        return 0;
+
+    case kOpenSettingsMessage:
+        if (context != nullptr && context->logger != nullptr) {
+            ShowSettingsDialogFromTray(*context);
         }
         return 0;
 
@@ -419,6 +431,9 @@ AppHostOptions ParseAppHostOptions() {
         }
         else if (argument == L"--archive-smoke-test") {
             options.archiveSmokeTest = true;
+        }
+        else if (argument == L"--settings") {
+            options.openSettingsOnStartup = true;
         }
     }
 

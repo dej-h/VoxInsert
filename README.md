@@ -1,166 +1,334 @@
 # VoxInsert
 
-This repo is set up for the first small buildable slices from [VoiceAgentTyper_Updated_Build_Guide.md](VoiceAgentTyper_Updated_Build_Guide.md): a buildable Windows-native skeleton plus a basic Win32 app lifetime.
+VoxInsert is a Windows-native tray app for push-to-talk dictation. Press a global hotkey, speak, press the hotkey again, and VoxInsert transcribes the recording with a configured speech-to-text provider before pasting the text into the currently focused app.
 
-For the step-by-step learning path behind the Windows APIs and build system, start with [documentation/README.md](documentation/README.md).
+It is built as a local-first utility: API keys stay in Windows Credential Manager, runtime settings live under AppData, temporary audio stays in the temp directory, and optional archiving is disabled by default.
 
-The current code intentionally does only this:
+## What It Can Do
 
-- CMake configures
-- the project builds with MSVC + Ninja
-- the executable creates a hidden Win32 control window
-- the app enters a normal message loop
-- the app adds a dedicated notification-area icon with a Quit menu
-- the app loads configurable hotkeys from `%APPDATA%\VoxInsert\config.json`
-- the tray menu can open a small settings dialog or reload `%APPDATA%\VoxInsert\config.json` while the app is idle
-- the default hotkeys are `F8` for toggle and `Escape` for cancel
-- the toggle hotkey records from the current default microphone and writes a WAV file on stop
-- after the WAV is written, the app uploads it to OpenAI transcription and pastes the returned text into the currently focused text field from a background worker
-- while recording or processing, the app shows a click-through floating status pill above the tray icon
-- the status pill shows live microphone activity while recording, a spinner while working, and short done/error states
-- on startup, the app checks whether the configured OpenAI credential exists and offers to create it if it is missing
-- the tray menu now includes `Settings...`, `Reload config`, `Copy Last Transcript`, `Re-insert Last Transcript`, `Open Last Recording Folder`, `Set OpenAI Key...`, and `Remove OpenAI Key`
-- the cancel hotkey returns `Recording` back to `Idle`
-- choosing Quit removes the tray icon and exits cleanly
-- startup and shutdown are logged to `%LOCALAPPDATA%\VoxInsert\logs\voxinsert.log`
-- `--smoke-test` drives a short start/cancel/start/stop recording sequence, skips the OpenAI upload, and exits automatically with code `0`
+- Run as a hidden Win32 tray app with a dedicated notification-area icon.
+- Start/stop recording with a global hotkey. The default toggle hotkey is `F8`.
+- Cancel an active recording with a global hotkey. The default cancel hotkey is `Escape`.
+- Record from the current default Windows microphone through PortAudio.
+- Save a temporary WAV under `%TEMP%\VoxInsert` for the transcription upload path.
+- Transcribe with OpenAI or Mistral through a provider abstraction.
+- Paste the transcript into the focused text field through clipboard paste and `Ctrl+V`.
+- Optionally send `Enter` after paste through config.
+- Show a click-through status pill while recording, transcribing, inserting, and finishing.
+- Manage provider API keys from Settings without storing secrets in JSON.
+- Show whether an API key exists for the configured credential target.
+- Recover the latest in-memory transcript from the tray menu.
+- Open the folder for the most recent temporary recording.
+- Optionally archive completed dictations as `.opus`, `.txt`, and `.json` files on a background worker.
+- Register or unregister per-user Windows startup from Settings.
+- Run smoke tests for host lifetime and archive encoding.
 
-It currently uses clipboard paste for insertion and does not implement richer insertion modes yet.
+## Current Limits
 
-## Toolchain bootstrap
+- Windows only.
+- Microphone selection uses the OS default input device; there is no device picker yet.
+- Text insertion currently uses clipboard paste only.
+- Mistral's dedicated offline transcription endpoint currently uses `voxtral-mini-latest`; Voxtral Small would require a separate chat-with-audio implementation path.
+- Optional archive files are local filesystem files, not a searchable history UI yet.
 
-Run this once in PowerShell:
+## Requirements
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\bootstrap-toolchain.ps1
-```
+- Windows 10 or Windows 11.
+- PowerShell.
+- Visual Studio Build Tools 2022 with the C++ workload.
+- CMake.
+- Ninja.
+- Git.
+- vcpkg, normally at `C:\dev\vcpkg`.
+- An OpenAI API key, a Mistral API key, or both.
 
-The bootstrap script installs or validates the native Windows toolchain needed to start building the project yourself:
+The bootstrap script can install or validate the native build tools used by this repo.
 
-- Visual Studio Build Tools 2022 with the C++ workload
-- CMake
-- Ninja
-- Git if `git.exe` is not already available
-- PowerShell 7 if `pwsh.exe` is not already available
-- `vcpkg` in `C:\dev\vcpkg`
-
-It also sets the user-level `VCPKG_ROOT` environment variable.
-
-## Build
-
-Debug build:
+If PowerShell blocks local scripts in your current shell, run this once before the repo commands below:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\build-debug.ps1
+Set-ExecutionPolicy -Scope Process Bypass
 ```
 
-Release build:
+## Install From Release Zip
+
+If you just want to use VoxInsert on a Windows machine, download the latest release zip from GitHub Releases.
+
+Extract the zip, then run either:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\build-release.ps1
+.\install.ps1
 ```
+
+or double-click:
+
+```text
+Install VoxInsert.bat
+```
+
+`install.ps1` now asks a few install questions by default: install location, Start Menu shortcut, Desktop shortcut, launch after install, and whether to open Settings after launch.
+
+For automation or testing, skip the prompts with:
+
+```powershell
+.\install.ps1 -NonInteractive
+```
+
+By default the installer copies VoxInsert into:
+
+```text
+%LOCALAPPDATA%\Programs\VoxInsert
+```
+
+It creates Start Menu shortcuts, preserves existing AppData config and stored credentials on reinstall, and launches VoxInsert after install. On first install it opens Settings automatically so you can enter your provider key.
+
+To uninstall later, run:
+
+```powershell
+& "$env:LOCALAPPDATA\Programs\VoxInsert\uninstall.ps1"
+```
+
+The uninstall flow removes the installed program files and shortcuts, then optionally removes config, logs, archive data, and stored provider credentials.
+
+## Install From Source
+
+Clone the repo, then run the bootstrap once:
+
+```powershell
+git clone <repo-url> VoxInsert
+cd VoxInsert
+.\scripts\bootstrap-toolchain.ps1
+```
+
+Build the debug executable:
+
+```powershell
+.\scripts\build-debug.ps1
+```
+
+Build the release executable:
+
+```powershell
+.\scripts\build-release.ps1
+```
+
+The build uses vcpkg manifest mode. Project dependencies are listed in [vcpkg.json](vcpkg.json): PortAudio, cpr, libopusenc, nlohmann/json, and spdlog.
 
 ## Run
 
-Run the debug app normally:
+Run the debug app:
 
 ```powershell
-& .\out\build\windows-msvc-debug\VoiceAgentTyper.exe
+& .\out\build\windows-msvc-debug\VoxInsert.exe
 ```
 
-The app starts hidden and adds a dedicated tray icon. Right-click the tray icon and choose `Quit` to exit cleanly.
-
-On first launch, the app creates `%APPDATA%\VoxInsert\config.json` from [config.example.json](config.example.json) if that file does not already exist.
-
-By default, press `F8` once to start recording from the current default microphone, press `Escape` to cancel back to idle, or press `F8` again to stop and write a WAV file under `%TEMP%\VoxInsert`. After transcription succeeds, the app pastes the transcript into whichever text field is currently focused by setting the clipboard temporarily and sending `Ctrl+V`. You can change those bindings and insertion options in `%APPDATA%\VoxInsert\config.json`, then choose `Reload config` from the tray menu while VoxInsert is idle. Reloading re-parses config, re-registers the configured global hotkeys, applies `ui.show_status_pill`, and syncs `system.auto_start_with_windows` with the current user's Windows startup registry entry. The current capture state is logged and reflected in the tray tooltip/menu title as `recording`, `saving recording`, `transcribing`, `inserting`, `inserted`, or an error message.
-
-The tray `Settings...` dialog edits the live-safe settings surface: `hotkeys.toggle_recording`, `hotkeys.cancel_recording`, `transcription.prompt`, `system.auto_start_with_windows`, `ui.show_status_pill`, and `ui.status_pill_position`. Pressing Save updates `%APPDATA%\VoxInsert\config.json`, reloads the config, re-registers the selected global hotkeys, updates the transcription prompt, updates the status pill setting and placement, and adds or removes the `VoxInsert` value under the current user's Windows `Run` registry key.
-
-`ui.status_pill_position` supports `tray_anchor`, `screen_top_left`, `screen_top_right`, `screen_bottom_left`, and `screen_bottom_right`. Older configs that still say `bottom_right` are treated as the tray-anchored behavior for compatibility.
-
-After a transcription succeeds, VoxInsert keeps the last transcript in memory so the tray menu can recover it without re-recording. `Copy Last Transcript` writes it back to the clipboard, `Re-insert Last Transcript` pastes it again into the currently focused text field using the configured insertion behavior, and `Open Last Recording Folder` opens the folder containing the most recently written WAV under `%TEMP%\VoxInsert`.
-
-For a classic desktop Win32 app like this one, Windows does not show an in-app microphone consent dialog. The app opens the OS default input device through PortAudio. If microphone privacy is blocked, recording start will fail and the error points you to Settings > Privacy & security > Microphone, where both device microphone access and desktop app microphone access must be enabled.
-
-For the current transcription milestone, the app reads the OpenAI API key from Windows Credential Manager only. By default it looks for a Generic Credential with the target name `VoiceAgentTyper/OpenAI`, which matches `transcription.credential_target` in `%APPDATA%\VoxInsert\config.json`. After the WAV is written, a background worker uploads it to `https://api.openai.com/v1/audio/transcriptions` using the configured model, language hint, and prompt from `%APPDATA%\VoxInsert\config.json`, then pastes the returned transcript into the currently focused text field. The hidden Win32 window remains free to process tray, hotkey, and status-pill animation messages while that worker runs.
-
-Insertion is currently implemented through `insertion.mode = clipboard_paste`. If `insertion.restore_clipboard` is `true`, the app restores the previous Unicode text clipboard contents after a short paste delay. If `insertion.auto_press_enter` is `true`, it sends `Enter` after the paste, but the default remains `false`.
-
-The status pill follows [documentation/statuspill-design-spec.md](documentation/statuspill-design-spec.md). It is a passive, topmost, click-through overlay. During recording it consumes live RMS amplitude samples from the microphone stream and renders five waveform bars. During transcription and insertion it renders a spinner, then briefly shows success or error feedback before hiding.
-
-If that credential is missing on startup, the app now prompts you to create it through a small built-in setup dialog. You can also open the tray menu later and choose `Set OpenAI Key...` or `Remove OpenAI Key`.
-
-One-time setup in Windows Credential Manager:
-
-- open Credential Manager
-- choose Windows Credentials
-- add a Generic Credential
-- set the target name to `VoiceAgentTyper/OpenAI`
-- set any username you want, such as `openai`
-- paste the OpenAI API key into the password field
-
-Run the automated lifetime smoke test:
+Run the release app:
 
 ```powershell
-& .\out\build\windows-msvc-debug\VoiceAgentTyper.exe --smoke-test
+& .\out\build\windows-msvc-release\VoxInsert.exe
+```
+
+The app starts hidden and adds a tray icon. Right-click the tray icon to open the menu. Choose `Quit` to exit cleanly.
+
+To create a GitHub-distributable release zip locally:
+
+```powershell
+.\scripts\package-release.ps1
+```
+
+This builds the release executable, stages the required runtime files, runs the smoke tests from the staged package, and writes a zip under `out\release`.
+
+Basic dictation flow:
+
+1. Focus the text box or editor where the transcript should be inserted.
+2. Press `F8` to start recording.
+3. Speak.
+4. Press `F8` again to stop, transcribe, and insert.
+5. Press `Escape` while recording to cancel without transcribing.
+
+## First-Time Setup
+
+On first launch, VoxInsert creates `%APPDATA%\VoxInsert\config.json` from [config.example.json](config.example.json) if no user config exists yet.
+
+Open the tray menu and choose `Settings...`.
+
+In the General tab:
+
+- choose the transcription provider
+- edit the language hint
+- edit toggle/cancel hotkeys
+- enable or disable Windows startup
+- enable or disable the status pill
+- choose status pill placement
+
+In the OpenAI tab:
+
+- set the OpenAI model
+- set the Credential Manager target
+- enter or remove the OpenAI API key
+- edit the OpenAI transcription prompt
+
+In the Mistral tab:
+
+- set the Mistral model
+- set the Credential Manager target
+- enter or remove the Mistral API key
+- edit the Mistral `context_bias` terms
+
+In the Archive tab:
+
+- enable or disable local archiving
+- choose whether to save transcript text
+- choose whether to save compressed Opus audio
+- choose the archive folder
+
+Press `Save` to update `%APPDATA%\VoxInsert\config.json` and apply settings while the app is idle.
+
+## API Keys And Credentials
+
+API keys are stored in Windows Credential Manager through [src/security/api_credential_store.cpp](src/security/api_credential_store.cpp). They are not stored in `config.json`.
+
+Default credential targets:
+
+- OpenAI: `VoiceAgentTyper/OpenAI`
+- Mistral: `VoiceAgentTyper/Mistral`
+
+Those credential target names intentionally keep the older `VoiceAgentTyper/...` values so existing Windows Credential Manager entries continue to work after the app rename.
+
+The Settings dialog can save, replace, or remove keys for those targets. It also shows whether a key is currently present without displaying the secret.
+
+On startup, VoxInsert checks whether the selected provider has a stored key and offers to open Settings if it is missing.
+
+## Provider Notes
+
+OpenAI transcription uses the file upload path at `/v1/audio/transcriptions`. The default model is `gpt-4o-transcribe`, with a configurable prompt for coding and technical dictation terms.
+
+Mistral transcription uses `/v1/audio/transcriptions` with `voxtral-mini-latest`. Mistral's `context_bias` field expects comma-separated terms and rejects whitespace inside individual entries, so VoxInsert normalizes entries such as `VS Code` to `VS_Code` before saving or sending.
+
+Provider reference notes live in [documentation/reference/openai-transcription-api.md](documentation/reference/openai-transcription-api.md) and [documentation/reference/mistral-transcription-api.md](documentation/reference/mistral-transcription-api.md).
+
+## Local Data Locations
+
+Runtime config:
+
+```text
+%APPDATA%\VoxInsert\config.json
+```
+
+Logs:
+
+```text
+%LOCALAPPDATA%\VoxInsert\logs\voxinsert.log
+```
+
+Temporary recordings:
+
+```text
+%TEMP%\VoxInsert\recording-*.wav
+```
+
+Optional archive default:
+
+```text
+%LOCALAPPDATA%\VoxInsert\Archive\YYYY\MM\DD\clip-*.opus
+%LOCALAPPDATA%\VoxInsert\Archive\YYYY\MM\DD\clip-*.txt
+%LOCALAPPDATA%\VoxInsert\Archive\YYYY\MM\DD\clip-*.json
+```
+
+Archiving is disabled by default. When enabled, archive work is queued to [src/archive/archive_service.cpp](src/archive/archive_service.cpp), which writes files on its own worker thread so compression does not block the Win32 message loop.
+
+## Configuration
+
+The checked-in template is [config.example.json](config.example.json). The live user config is copied to `%APPDATA%\VoxInsert\config.json` on first run.
+
+Important sections:
+
+- `hotkeys`: toggle and cancel hotkey bindings
+- `transcription`: provider selection, language hint, provider-specific models, prompts, context bias, and credential targets
+- `insertion`: clipboard paste behavior
+- `audio`: sample rate, channels, buffer size, and max recording length
+- `ui`: status pill visibility and placement
+- `system`: Windows startup and minimized launch behavior
+- `archive`: optional transcript/audio archive settings
+
+The app can reload config from the tray menu while idle. The Settings dialog is the safer path for common settings because it validates fields and manages credentials.
+
+## Smoke Tests
+
+Run the host smoke test:
+
+```powershell
+& .\out\build\windows-msvc-debug\VoxInsert.exe --smoke-test
 $LASTEXITCODE
-Get-Content "$env:LOCALAPPDATA\VoxInsert\logs\voxinsert.log" -Tail 12
 ```
 
-If you replace [assets/VoxInsertIcon.png](assets/VoxInsertIcon.png), regenerate the Windows icon first:
+Run the archive smoke test:
+
+```powershell
+& .\out\build\windows-msvc-debug\VoxInsert.exe --archive-smoke-test
+$LASTEXITCODE
+```
+
+The host smoke test exercises tray startup/shutdown and recording state transitions without making a real transcription API call. The archive smoke test synthesizes PCM audio, writes an Opus archive clip plus transcript and metadata sidecars, verifies the files, and cleans up after itself.
+
+To inspect recent logs:
+
+```powershell
+Get-Content "$env:LOCALAPPDATA\VoxInsert\logs\voxinsert.log" -Tail 40
+```
+
+## Microphone Privacy
+
+Classic Win32 desktop apps do not show an in-app microphone consent dialog. If recording fails immediately, check Windows Settings:
+
+```text
+Settings > Privacy & security > Microphone
+```
+
+Make sure microphone access and desktop app microphone access are both enabled.
+
+## Project Structure
+
+- [src/archive](src/archive): optional transcript and Ogg Opus audio archive service
+- [src/audio](src/audio): PortAudio capture and temporary WAV writing
+- [src/config](src/config): AppData config loading, validation, defaults, and saving
+- [src/input](src/input): global hotkey registration
+- [src/insertion](src/insertion): clipboard paste insertion
+- [src/observability](src/observability): logging and string conversion helpers
+- [src/runtime](src/runtime): hidden Win32 host, tray menu, settings integration, startup registration, and post-recording workflow
+- [src/security](src/security): Windows Credential Manager helpers
+- [src/testing](src/testing): smoke-test driver
+- [src/transcription](src/transcription): provider contract, OpenAI provider, Mistral provider, and provider dispatch facade
+- [src/ui](src/ui): native settings dialog and status pill overlay
+- [assets](assets): app and tray icon assets
+- [scripts](scripts): bootstrap, build, and icon generation scripts
+- [documentation/reference](documentation/reference): provider API reference notes
+
+## Development Notes
+
+Useful commands while working:
+
+```powershell
+.\scripts\build-debug.ps1
+& .\out\build\windows-msvc-debug\VoxInsert.exe --smoke-test
+& .\out\build\windows-msvc-debug\VoxInsert.exe --archive-smoke-test
+```
+
+If the build fails with `LNK1168: cannot open VoxInsert.exe for writing`, close the running app from the tray or stop it:
+
+```powershell
+Get-Process VoxInsert -ErrorAction SilentlyContinue | Stop-Process -Force
+```
+
+If you replace [assets/VoxInsertIcon.png](assets/VoxInsertIcon.png), regenerate the Windows icons:
 
 ```powershell
 pwsh -File .\scripts\generate-app-icon.ps1
 ```
 
-That script now produces both [assets/VoxInsertIcon.ico](assets/VoxInsertIcon.ico) for the executable/app resource and [assets/VoxInsertTray.ico](assets/VoxInsertTray.ico) for the notification-area tray icon.
+## Related Docs
 
-The current tray-host implementation also follows Microsoft's recommended loading path for notification-area icons: the executable embeds a Common Controls v6 + DPI-awareness manifest, loads the tray icon with `LoadIconMetric`, and sets `NOTIFYICON_VERSION_4` after `NIM_ADD`.
-
-If your local execution policy already allows local scripts, you can also run the build scripts directly as `./scripts/build-debug.ps1` and `./scripts/build-release.ps1`. The longer `powershell -ExecutionPolicy Bypass -File ...` form is just the most robust copy-paste wrapper for setup instructions.
-
-## What is in the repo
-
-- [CMakeLists.txt](CMakeLists.txt)
-- [CMakePresets.json](CMakePresets.json)
-- [vcpkg.json](vcpkg.json)
-- [config.example.json](config.example.json)
-- [documentation/README.md](documentation/README.md)
-- [scripts/bootstrap-toolchain.ps1](scripts/bootstrap-toolchain.ps1)
-- [scripts/build-debug.ps1](scripts/build-debug.ps1)
-- [scripts/build-release.ps1](scripts/build-release.ps1)
-- [scripts/generate-app-icon.ps1](scripts/generate-app-icon.ps1)
-- [src/archive/archive_service.cpp](src/archive/archive_service.cpp)
-- [src/archive/archive_service.h](src/archive/archive_service.h)
-- [src/audio/audio_recorder.cpp](src/audio/audio_recorder.cpp)
-- [src/audio/audio_recorder.h](src/audio/audio_recorder.h)
-- [src/audio/wav_writer.cpp](src/audio/wav_writer.cpp)
-- [src/audio/wav_writer.h](src/audio/wav_writer.h)
-- [src/config/app_config.cpp](src/config/app_config.cpp)
-- [src/config/app_config.h](src/config/app_config.h)
-- [src/input/hotkey_manager.cpp](src/input/hotkey_manager.cpp)
-- [src/input/hotkey_manager.h](src/input/hotkey_manager.h)
-- [src/insertion/text_injector.cpp](src/insertion/text_injector.cpp)
-- [src/insertion/text_injector.h](src/insertion/text_injector.h)
-- [src/main.cpp](src/main.cpp)
-- [src/observability/logging.cpp](src/observability/logging.cpp)
-- [src/observability/logging.h](src/observability/logging.h)
-- [src/resource.h](src/resource.h)
-- [src/runtime/app_host.cpp](src/runtime/app_host.cpp)
-- [src/runtime/app_host.h](src/runtime/app_host.h)
-- [src/security/openai_credential_store.cpp](src/security/openai_credential_store.cpp)
-- [src/security/openai_credential_store.h](src/security/openai_credential_store.h)
-- [src/testing/app_host_smoke_test.cpp](src/testing/app_host_smoke_test.cpp)
-- [src/testing/app_host_smoke_test.h](src/testing/app_host_smoke_test.h)
-- [src/transcription/transcription_client.cpp](src/transcription/transcription_client.cpp)
-- [src/transcription/transcription_client.h](src/transcription/transcription_client.h)
-- [src/ui/status_pill.cpp](src/ui/status_pill.cpp)
-- [src/ui/status_pill.h](src/ui/status_pill.h)
-- [src/VoiceAgentTyper.rc](src/VoiceAgentTyper.rc)
-- [assets/VoxInsertIcon.ico](assets/VoxInsertIcon.ico)
-- [assets/VoxInsertIcon.png](assets/VoxInsertIcon.png)
-- [assets/VoxInsertTray.ico](assets/VoxInsertTray.ico)
-
-## Next step
-
-The next incremental slice after this is a small reload-config action so prompt, insertion, and UI settings can be changed without restarting the app.
+- [VoxInsert_Updated_Build_Guide.md](VoxInsert_Updated_Build_Guide.md)
+- [documentation/reference/README.md](documentation/reference/README.md)
+- [documentation/reference/openai-transcription-api.md](documentation/reference/openai-transcription-api.md)
+- [documentation/reference/mistral-transcription-api.md](documentation/reference/mistral-transcription-api.md)
