@@ -57,4 +57,4 @@ BEGIN
 	PUSHBUTTON      "Cancel",IDCANCEL,196,235,50,14
 END
 
-1 24 "VoiceAgentTyper.manifest"
+1 24 "VoxInsert.manifest"

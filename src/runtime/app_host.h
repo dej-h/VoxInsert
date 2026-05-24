@@ -13,6 +13,7 @@ struct AppHostOptions {
     // Exercises the tray host and placeholder hotkey state machine without manual input.
     bool smokeTest = false;
     bool archiveSmokeTest = false;
+    bool openSettingsOnStartup = false;
 };
 
 AppHostOptions ParseAppHostOptions();

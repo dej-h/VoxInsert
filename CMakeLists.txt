@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.25)
 
-project(VoiceAgentTyper
+project(VoxInsert
     VERSION 0.1.0
     LANGUAGES CXX
 )
@@ -19,7 +19,7 @@ find_library(OPUSENC_LIBRARY NAMES opusenc REQUIRED)
 find_path(OPUS_INCLUDE_DIR NAMES opus/opus.h REQUIRED)
 find_library(OPUS_LIBRARY NAMES opus REQUIRED)
 
-add_executable(VoiceAgentTyper WIN32
+add_executable(VoxInsert WIN32
     src/archive/archive_service.cpp
     src/audio/audio_recorder.cpp
     src/audio/wav_writer.cpp
@@ -43,16 +43,16 @@ add_executable(VoiceAgentTyper WIN32
     src/transcription/transcription_client.cpp
     src/ui/settings_dialog.cpp
     src/ui/status_pill.cpp
-    src/VoiceAgentTyper.rc
+    src/VoxInsert.rc
 )
 
-target_include_directories(VoiceAgentTyper PRIVATE
+target_include_directories(VoxInsert PRIVATE
     src
     ${OPUSENC_INCLUDE_DIR}
     ${OPUS_INCLUDE_DIR}
 )
 
-target_link_libraries(VoiceAgentTyper PRIVATE
+target_link_libraries(VoxInsert PRIVATE
     Advapi32
     Comctl32
     cpr::cpr
@@ -66,7 +66,7 @@ target_link_libraries(VoiceAgentTyper PRIVATE
     spdlog::spdlog
 )
 
-target_compile_definitions(VoiceAgentTyper PRIVATE
+target_compile_definitions(VoxInsert PRIVATE
     UNICODE
     _UNICODE
     WIN32_LEAN_AND_MEAN
@@ -74,13 +74,13 @@ target_compile_definitions(VoiceAgentTyper PRIVATE
 )
 
 if (MSVC)
-    target_compile_options(VoiceAgentTyper PRIVATE
+    target_compile_options(VoxInsert PRIVATE
         /W4
         /permissive-
         /utf-8
     )
 
-    target_link_options(VoiceAgentTyper PRIVATE
+    target_link_options(VoxInsert PRIVATE
         /MANIFEST:NO
     )
 endif()

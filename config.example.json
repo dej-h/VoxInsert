@@ -9,12 +9,12 @@
     "openai": {
       "model": "gpt-4o-transcribe",
       "credential_target": "VoiceAgentTyper/OpenAI",
-      "prompt": "The user is dictating technical prompts for coding agents, IDEs, VS Code, GitHub Copilot, Claude Code, Codex, Python, C++, FastAPI, LangChain, OpenAI, Docker, GitHub, APIs, terminals, embeddings, rerankers, and software engineering workflows."
+      "prompt": "The user is dictating technical prompts for coding agents, IDEs, VS Code, GitHub Copilot, Claude Code, Codex, Python, C++, FastAPI, LangChain, OpenAI, Docker, GitHub, APIs, terminals and software engineering workflows."
     },
     "mistral": {
       "model": "voxtral-mini-latest",
       "credential_target": "VoiceAgentTyper/Mistral",
-      "context_bias": "VoxInsert,VS_Code,GitHub_Copilot,Claude_Code,Codex,Python,C++,FastAPI,LangChain,OpenAI,Docker,GitHub,APIs,terminals,embeddings,rerankers"
+      "context_bias": "VoxInsert,VS_Code,GitHub_Copilot,Claude_Code,Codex,Python,C++,FastAPI,LangChain,OpenAI,Docker,GitHub,APIs,terminals"
     }
   },
   "insertion": {
