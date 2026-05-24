@@ -26,10 +26,10 @@
   },
   "ui": {
     "show_status_pill": true,
-    "status_pill_position": "bottom_right"
+    "status_pill_position": "tray_anchor"
   },
   "system": {
-    "auto_start_with_windows": true,
+    "auto_start_with_windows": false,
     "launch_minimized": true
   }
 }

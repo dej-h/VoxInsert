@@ -12,13 +12,14 @@ The current code intentionally does only this:
 - the app enters a normal message loop
 - the app adds a dedicated notification-area icon with a Quit menu
 - the app loads configurable hotkeys from `%APPDATA%\VoxInsert\config.json`
+- the tray menu can open a small settings dialog or reload `%APPDATA%\VoxInsert\config.json` while the app is idle
 - the default hotkeys are `F8` for toggle and `Escape` for cancel
 - the toggle hotkey records from the current default microphone and writes a WAV file on stop
 - after the WAV is written, the app uploads it to OpenAI transcription and pastes the returned text into the currently focused text field from a background worker
 - while recording or processing, the app shows a click-through floating status pill above the tray icon
 - the status pill shows live microphone activity while recording, a spinner while working, and short done/error states
 - on startup, the app checks whether the configured OpenAI credential exists and offers to create it if it is missing
-- the tray menu now includes `Set OpenAI Key...` and `Remove OpenAI Key`
+- the tray menu now includes `Settings...`, `Reload config`, `Copy Last Transcript`, `Re-insert Last Transcript`, `Open Last Recording Folder`, `Set OpenAI Key...`, and `Remove OpenAI Key`
 - the cancel hotkey returns `Recording` back to `Idle`
 - choosing Quit removes the tray icon and exits cleanly
 - startup and shutdown are logged to `%LOCALAPPDATA%\VoxInsert\logs\voxinsert.log`
@@ -71,7 +72,13 @@ The app starts hidden and adds a dedicated tray icon. Right-click the tray icon 
 
 On first launch, the app creates `%APPDATA%\VoxInsert\config.json` from [config.example.json](config.example.json) if that file does not already exist.
 
-By default, press `F8` once to start recording from the current default microphone, press `Escape` to cancel back to idle, or press `F8` again to stop and write a WAV file under `%TEMP%\VoxInsert`. After transcription succeeds, the app pastes the transcript into whichever text field is currently focused by setting the clipboard temporarily and sending `Ctrl+V`. You can change those bindings and insertion options in `%APPDATA%\VoxInsert\config.json`. The current capture state is logged and also reflected in the tray tooltip/menu title.
+By default, press `F8` once to start recording from the current default microphone, press `Escape` to cancel back to idle, or press `F8` again to stop and write a WAV file under `%TEMP%\VoxInsert`. After transcription succeeds, the app pastes the transcript into whichever text field is currently focused by setting the clipboard temporarily and sending `Ctrl+V`. You can change those bindings and insertion options in `%APPDATA%\VoxInsert\config.json`, then choose `Reload config` from the tray menu while VoxInsert is idle. Reloading re-parses config, re-registers the configured global hotkeys, applies `ui.show_status_pill`, and syncs `system.auto_start_with_windows` with the current user's Windows startup registry entry. The current capture state is logged and reflected in the tray tooltip/menu title as `recording`, `saving recording`, `transcribing`, `inserting`, `inserted`, or an error message.
+
+The tray `Settings...` dialog edits the live-safe settings surface: `hotkeys.toggle_recording`, `hotkeys.cancel_recording`, `system.auto_start_with_windows`, `ui.show_status_pill`, and `ui.status_pill_position`. Pressing Save updates `%APPDATA%\VoxInsert\config.json`, reloads the config, re-registers the selected global hotkeys, updates the status pill setting and placement, and adds or removes the `VoxInsert` value under the current user's Windows `Run` registry key.
+
+`ui.status_pill_position` supports `tray_anchor`, `screen_top_left`, `screen_top_right`, `screen_bottom_left`, and `screen_bottom_right`. Older configs that still say `bottom_right` are treated as the tray-anchored behavior for compatibility.
+
+After a transcription succeeds, VoxInsert keeps the last transcript in memory so the tray menu can recover it without re-recording. `Copy Last Transcript` writes it back to the clipboard, `Re-insert Last Transcript` pastes it again into the currently focused text field using the configured insertion behavior, and `Open Last Recording Folder` opens the folder containing the most recently written WAV under `%TEMP%\VoxInsert`.
 
 For a classic desktop Win32 app like this one, Windows does not show an in-app microphone consent dialog. The app opens the OS default input device through PortAudio. If microphone privacy is blocked, recording start will fail and the error points you to Settings > Privacy & security > Microphone, where both device microphone access and desktop app microphone access must be enabled.
 

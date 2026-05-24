@@ -189,6 +189,18 @@ bool TextInjector::SendEnter(std::wstring& failureReason) const {
     return SendVirtualKeys(inputs, ARRAYSIZE(inputs), failureReason);
 }
 
+bool TextInjector::CopyTextToClipboard(
+    HWND ownerWindow,
+    std::wstring_view text,
+    std::wstring& failureReason) const {
+    if (text.empty()) {
+        failureReason = L"Cannot copy an empty transcript.";
+        return false;
+    }
+
+    return WriteClipboardUnicodeText(ownerWindow, text, failureReason);
+}
+
 bool TextInjector::InsertText(
     HWND ownerWindow,
     const InsertionConfig& config,

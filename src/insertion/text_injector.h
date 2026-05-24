@@ -11,6 +11,11 @@ namespace voxinsert {
 
 class TextInjector {
 public:
+    bool CopyTextToClipboard(
+        HWND ownerWindow,
+        std::wstring_view text,
+        std::wstring& failureReason) const;
+
     bool InsertText(
         HWND ownerWindow,
         const InsertionConfig& config,

@@ -19,4 +19,23 @@ BEGIN
 	PUSHBUTTON      "Cancel",IDCANCEL,188,65,50,14
 END
 
+IDD_SETTINGS_DIALOG DIALOGEX 0, 0, 250, 176
+STYLE DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "VoxInsert Settings"
+FONT 9, "Segoe UI"
+BEGIN
+	AUTOCHECKBOX    "Start VoxInsert with Windows",IDC_SETTINGS_START_WITH_WINDOWS,7,10,180,10
+	AUTOCHECKBOX    "Show status pill",IDC_SETTINGS_SHOW_STATUS_PILL,7,28,180,10
+	LTEXT           "Toggle recording hotkey:",-1,7,48,80,8
+	CONTROL         "",IDC_SETTINGS_TOGGLE_HOTKEY,"msctls_hotkey32",WS_TABSTOP,98,45,70,14
+	LTEXT           "Cancel hotkey:",-1,7,68,80,8
+	CONTROL         "",IDC_SETTINGS_CANCEL_HOTKEY,"msctls_hotkey32",WS_TABSTOP,98,65,70,14
+	LTEXT           "Status pill placement:",IDC_SETTINGS_STATUS_PILL_POSITION_LABEL,7,88,86,8
+	COMBOBOX        IDC_SETTINGS_STATUS_PILL_POSITION,98,85,118,90,CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+	LTEXT           "Click a hotkey field, then press the shortcut you want. VoxInsert pauses global hotkeys while this dialog is open.",IDC_SETTINGS_HOTKEY_HINT,7,108,236,20
+	LTEXT           "Settings are saved to %APPDATA%\\VoxInsert\\config.json and applied when you press Save.",-1,7,132,236,20
+	DEFPUSHBUTTON   "Save",IDOK,132,155,50,14
+	PUSHBUTTON      "Cancel",IDCANCEL,188,155,50,14
+END
+
 1 24 "VoiceAgentTyper.manifest"

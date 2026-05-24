@@ -49,10 +49,10 @@ constexpr char kFallbackConfigJson[] = R"json({
   },
   "ui": {
     "show_status_pill": true,
-    "status_pill_position": "bottom_right"
+        "status_pill_position": "tray_anchor"
   },
   "system": {
-    "auto_start_with_windows": true,
+        "auto_start_with_windows": false,
     "launch_minimized": true
   }
 })json";
@@ -234,12 +234,114 @@ bool ParsePrimaryKeyToken(
     return false;
 }
 
+bool TryDescribePrimaryKey(UINT virtualKey, std::wstring& displayName) {
+    if (virtualKey == VK_ESCAPE) {
+        displayName = L"Escape";
+        return true;
+    }
+
+    if ((virtualKey >= L'A' && virtualKey <= L'Z') ||
+        (virtualKey >= L'0' && virtualKey <= L'9')) {
+        displayName.assign(1, static_cast<wchar_t>(virtualKey));
+        return true;
+    }
+
+    if (virtualKey >= VK_F1 && virtualKey <= VK_F24) {
+        displayName = L"F" + std::to_wstring((virtualKey - VK_F1) + 1);
+        return true;
+    }
+
+    return false;
+}
+
+std::wstring BuildHotkeyDisplayName(const HotkeyBinding& binding) {
+    std::wstring displayName;
+    const UINT modifiers = binding.modifiers & (MOD_CONTROL | MOD_ALT | MOD_SHIFT | MOD_WIN);
+    if ((modifiers & MOD_CONTROL) != 0) {
+        displayName += L"Ctrl+";
+    }
+
+    if ((modifiers & MOD_ALT) != 0) {
+        displayName += L"Alt+";
+    }
+
+    if ((modifiers & MOD_SHIFT) != 0) {
+        displayName += L"Shift+";
+    }
+
+    if ((modifiers & MOD_WIN) != 0) {
+        displayName += L"Win+";
+    }
+
+    std::wstring primaryKeyName;
+    if (TryDescribePrimaryKey(binding.virtualKey, primaryKeyName)) {
+        displayName += primaryKeyName;
+        return displayName;
+    }
+
+    if (!binding.displayName.empty()) {
+        return binding.displayName;
+    }
+
+    return displayName;
+}
+
+bool ParseStatusPillPlacement(
+    std::string_view text,
+    StatusPillPlacement& placement,
+    std::wstring& failureReason) {
+    if (text.empty() || text == "tray_anchor" || text == "bottom_right") {
+        placement = StatusPillPlacement::TrayAnchor;
+        return true;
+    }
+
+    if (text == "screen_top_left") {
+        placement = StatusPillPlacement::ScreenTopLeft;
+        return true;
+    }
+
+    if (text == "screen_top_right") {
+        placement = StatusPillPlacement::ScreenTopRight;
+        return true;
+    }
+
+    if (text == "screen_bottom_left") {
+        placement = StatusPillPlacement::ScreenBottomLeft;
+        return true;
+    }
+
+    if (text == "screen_bottom_right") {
+        placement = StatusPillPlacement::ScreenBottomRight;
+        return true;
+    }
+
+    failureReason = L"Unsupported ui.status_pill_position value '";
+    failureReason += WideFromUtf8(std::string(text));
+    failureReason += L"'. Supported values are tray_anchor, screen_top_left, screen_top_right, screen_bottom_left, and screen_bottom_right.";
+    return false;
+}
+
+std::string_view StatusPillPlacementToConfigString(StatusPillPlacement placement) {
+    switch (placement) {
+    case StatusPillPlacement::ScreenTopLeft:
+        return "screen_top_left";
+    case StatusPillPlacement::ScreenTopRight:
+        return "screen_top_right";
+    case StatusPillPlacement::ScreenBottomLeft:
+        return "screen_bottom_left";
+    case StatusPillPlacement::ScreenBottomRight:
+        return "screen_bottom_right";
+    case StatusPillPlacement::TrayAnchor:
+    default:
+        return "tray_anchor";
+    }
+}
+
 bool ParseHotkeyBinding(std::wstring_view text, HotkeyBinding& binding, std::wstring& failureReason) {
     HotkeyBinding parsedBinding{};
     parsedBinding.modifiers = MOD_NOREPEAT;
 
     bool foundPrimaryKey = false;
-    std::vector<std::wstring> displayParts;
     size_t currentOffset = 0;
 
     while (currentOffset <= text.size()) {
@@ -259,19 +361,15 @@ bool ParseHotkeyBinding(std::wstring_view text, HotkeyBinding& binding, std::wst
         const std::wstring upperToken = ToUpperAscii(token);
         if (upperToken == L"CTRL" || upperToken == L"CONTROL") {
             parsedBinding.modifiers |= MOD_CONTROL;
-            displayParts.push_back(L"Ctrl");
         }
         else if (upperToken == L"ALT") {
             parsedBinding.modifiers |= MOD_ALT;
-            displayParts.push_back(L"Alt");
         }
         else if (upperToken == L"SHIFT") {
             parsedBinding.modifiers |= MOD_SHIFT;
-            displayParts.push_back(L"Shift");
         }
         else if (upperToken == L"WIN" || upperToken == L"WINDOWS") {
             parsedBinding.modifiers |= MOD_WIN;
-            displayParts.push_back(L"Win");
         }
         else {
             if (foundPrimaryKey) {
@@ -292,7 +390,6 @@ bool ParseHotkeyBinding(std::wstring_view text, HotkeyBinding& binding, std::wst
             }
 
             foundPrimaryKey = true;
-            displayParts.push_back(displayName);
         }
 
         if (separatorOffset == std::wstring_view::npos) {
@@ -309,13 +406,7 @@ bool ParseHotkeyBinding(std::wstring_view text, HotkeyBinding& binding, std::wst
         return false;
     }
 
-    parsedBinding.displayName.clear();
-    for (size_t index = 0; index < displayParts.size(); ++index) {
-        if (index > 0) {
-            parsedBinding.displayName += L"+";
-        }
-        parsedBinding.displayName += displayParts[index];
-    }
+    parsedBinding.displayName = BuildHotkeyDisplayName(parsedBinding);
 
     binding = parsedBinding;
     return true;
@@ -338,6 +429,48 @@ bool LoadJsonFile(const std::wstring& path, json& value, std::wstring& failureRe
         failureReason += WideFromUtf8(exception.what());
         return false;
     }
+}
+
+bool SaveJsonFile(const std::wstring& path, const json& value, std::wstring& failureReason) {
+    try {
+        std::ofstream outputFile(std::filesystem::path(path), std::ios::binary | std::ios::trunc);
+        if (!outputFile) {
+            failureReason = L"Failed to open config file for writing at ";
+            failureReason += path;
+            return false;
+        }
+
+        outputFile << value.dump(2) << '\n';
+        if (!outputFile.good()) {
+            failureReason = L"Failed to write config file at ";
+            failureReason += path;
+            return false;
+        }
+
+        return true;
+    }
+    catch (const json::exception& exception) {
+        failureReason = L"Failed to serialize config.json: ";
+        failureReason += WideFromUtf8(exception.what());
+        return false;
+    }
+}
+
+bool EnsureConfigSection(json& root, const char* sectionName, std::wstring& failureReason) {
+    auto sectionIt = root.find(sectionName);
+    if (sectionIt == root.end()) {
+        root[sectionName] = json::object();
+        return true;
+    }
+
+    if (sectionIt->is_object()) {
+        return true;
+    }
+
+    failureReason = L"Config section ";
+    failureReason += WideFromUtf8(sectionName);
+    failureReason += L" must be an object.";
+    return false;
 }
 
 bool LoadConfiguredHotkey(
@@ -519,6 +652,27 @@ bool LoadConfiguredUiSettings(const json& root, UiConfig& ui, std::wstring& fail
         return false;
     }
 
+    std::string position = std::string(StatusPillPlacementToConfigString(ui.statusPillPlacement));
+    if (!LoadConfiguredString(root, "ui", "status_pill_position", position, failureReason)) {
+        return false;
+    }
+
+    if (!ParseStatusPillPlacement(position, ui.statusPillPlacement, failureReason)) {
+        return false;
+    }
+
+    return true;
+}
+
+bool LoadConfiguredSystemSettings(const json& root, SystemConfig& system, std::wstring& failureReason) {
+    if (!LoadConfiguredBoolean(root, "system", "auto_start_with_windows", system.autoStartWithWindows, failureReason)) {
+        return false;
+    }
+
+    if (!LoadConfiguredBoolean(root, "system", "launch_minimized", system.launchMinimized, failureReason)) {
+        return false;
+    }
+
     return true;
 }
 
@@ -547,6 +701,31 @@ bool LoadConfiguredTranscriptionSettings(const json& root, TranscriptionConfig& 
 }
 
 } // namespace
+
+bool TryCreateHotkeyBinding(UINT modifiers, UINT virtualKey, HotkeyBinding& binding, std::wstring& failureReason) {
+    if (virtualKey == 0) {
+        failureReason = L"Choose a hotkey before saving settings.";
+        return false;
+    }
+
+    HotkeyBinding parsedBinding{};
+    parsedBinding.modifiers = (modifiers & (MOD_CONTROL | MOD_ALT | MOD_SHIFT | MOD_WIN)) | MOD_NOREPEAT;
+    parsedBinding.virtualKey = virtualKey;
+
+    std::wstring primaryKeyName;
+    if (!TryDescribePrimaryKey(virtualKey, primaryKeyName)) {
+        failureReason = L"Only A-Z, 0-9, F1-F24, and Escape hotkeys are supported right now.";
+        return false;
+    }
+
+    parsedBinding.displayName = BuildHotkeyDisplayName(parsedBinding);
+    binding = parsedBinding;
+    return true;
+}
+
+std::wstring SerializeHotkeyBinding(const HotkeyBinding& binding) {
+    return BuildHotkeyDisplayName(binding);
+}
 
 AppConfig DefaultAppConfig() {
     AppConfig config{};
@@ -612,7 +791,44 @@ bool LoadAppConfig(AppConfig& config, std::wstring& failureReason) {
         return false;
     }
 
+    if (!LoadConfiguredSystemSettings(root, config.system, failureReason)) {
+        return false;
+    }
+
     return true;
+}
+
+bool SaveAppSettings(const AppConfig& config, const AppSettingsUpdate& settings, std::wstring& failureReason) {
+    if (config.configFilePath.empty()) {
+        failureReason = L"Cannot save settings because config.configFilePath is empty.";
+        return false;
+    }
+
+    json root;
+    if (!LoadJsonFile(config.configFilePath, root, failureReason)) {
+        return false;
+    }
+
+    if (!EnsureConfigSection(root, "ui", failureReason)) {
+        return false;
+    }
+
+    if (!EnsureConfigSection(root, "system", failureReason)) {
+        return false;
+    }
+
+    if (!EnsureConfigSection(root, "hotkeys", failureReason)) {
+        return false;
+    }
+
+    root["hotkeys"]["toggle_recording"] = Utf8FromWide(SerializeHotkeyBinding(settings.toggleRecordingHotkey));
+    root["hotkeys"]["cancel_recording"] = Utf8FromWide(SerializeHotkeyBinding(settings.cancelRecordingHotkey));
+    root["ui"]["show_status_pill"] = settings.ui.showStatusPill;
+    root["ui"]["status_pill_position"] = StatusPillPlacementToConfigString(settings.ui.statusPillPlacement);
+    root["system"]["auto_start_with_windows"] = settings.system.autoStartWithWindows;
+    root["system"]["launch_minimized"] = settings.system.launchMinimized;
+
+    return SaveJsonFile(config.configFilePath, root, failureReason);
 }
 
 } // namespace voxinsert

@@ -23,9 +23,15 @@ add_executable(VoiceAgentTyper WIN32
     src/main.cpp
     src/observability/logging.cpp
     src/runtime/app_host.cpp
+    src/runtime/app_host_recording.cpp
+    src/runtime/app_host_runtime.cpp
+    src/runtime/app_host_settings.cpp
+    src/runtime/app_host_tray.cpp
+    src/runtime/startup_registration.cpp
     src/security/openai_credential_store.cpp
     src/testing/app_host_smoke_test.cpp
     src/transcription/transcription_client.cpp
+    src/ui/settings_dialog.cpp
     src/ui/status_pill.cpp
     src/VoiceAgentTyper.rc
 )

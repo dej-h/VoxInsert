@@ -23,15 +23,15 @@ constexpr UINT kAmplitudeMessage = WM_APP + 51;
 constexpr float kNoiseFloor = 0.010f;
 constexpr float kNoiseCeiling = 0.08f;
 constexpr float kSilenceThreshold = 0.08f;
-constexpr float kWaveformGamma = 0.45f;
-constexpr float kSmoothingAlpha = 0.40f;
+constexpr float kMeterGamma = 0.45f;
+constexpr float kMeterAttackAlpha = 0.42f;
+constexpr float kMeterReleaseAlpha = 0.14f;
 constexpr auto kFadeInDuration = std::chrono::milliseconds(120);
 constexpr auto kDefaultFadeOutDuration = std::chrono::milliseconds(200);
 constexpr auto kErrorFadeOutDuration = std::chrono::milliseconds(300);
 constexpr auto kDoneHoldDuration = std::chrono::milliseconds(600);
 constexpr auto kErrorHoldDuration = std::chrono::milliseconds(2400);
-constexpr auto kSilenceCollapseDuration = std::chrono::milliseconds(600);
-constexpr auto kWaveformBucketDuration = std::chrono::milliseconds(120);
+constexpr auto kAmplitudeIdleTimeout = std::chrono::milliseconds(120);
 constexpr int kBasePillHeight = 28;
 constexpr int kBaseMinimumPillWidth = 60;
 constexpr int kBasePaddingX = 12;
@@ -68,7 +68,7 @@ float NormalizeAmplitude(float rms) {
         return 0.0f;
     }
 
-    return std::pow(gated, kWaveformGamma);
+    return std::pow(gated, kMeterGamma);
 }
 
 } // namespace
@@ -82,12 +82,14 @@ bool StatusPill::Create(
     HWND ownerWindow,
     UINT trayIconId,
     bool enabled,
+    StatusPillPlacement placement,
     const std::shared_ptr<spdlog::logger>& logger,
     std::wstring& failureReason) {
     instance_ = instance;
     ownerWindow_ = ownerWindow;
     trayIconId_ = trayIconId;
     enabled_ = enabled;
+    placement_ = placement;
     logger_ = logger;
 
     if (!enabled_) {
@@ -198,13 +200,9 @@ void StatusPill::SetState(StatusPillState state, std::wstring_view errorText) {
     fadingOut_ = false;
 
     if (state_ == StatusPillState::Recording) {
-        amplitudeBars_.fill(0.0f);
-        smoothedBars_.fill(0.0f);
+        liveAmplitude_ = 0.0f;
+        displayedAmplitude_ = 0.0f;
         lastAmplitudeSample_ = {};
-        lastAudibleSample_ = {};
-        amplitudeBucketStarted_ = {};
-        amplitudeBucketSum_ = 0.0f;
-        amplitudeBucketCount_ = 0;
     }
 
     if (state_ == StatusPillState::Done) {
@@ -324,36 +322,8 @@ void StatusPill::HandleAnimationTick() {
 }
 
 void StatusPill::HandleAmplitudeSample(float rms) {
-    const float normalized = NormalizeAmplitude(rms);
-    const auto now = Clock::now();
-
-    if (amplitudeBucketStarted_ == Clock::time_point{}) {
-        amplitudeBucketStarted_ = now;
-    }
-
-    if (now - amplitudeBucketStarted_ >= kWaveformBucketDuration) {
-        const float completedBucket = amplitudeBucketCount_ == 0
-            ? 0.0f
-            : amplitudeBucketSum_ / static_cast<float>(amplitudeBucketCount_);
-
-        for (size_t index = 0; index + 2 < amplitudeBars_.size(); ++index) {
-            amplitudeBars_[index] = amplitudeBars_[index + 1];
-        }
-        amplitudeBars_[amplitudeBars_.size() - 2] = completedBucket;
-
-        amplitudeBucketStarted_ = now;
-        amplitudeBucketSum_ = 0.0f;
-        amplitudeBucketCount_ = 0;
-    }
-
-    amplitudeBucketSum_ += normalized;
-    ++amplitudeBucketCount_;
-
-    amplitudeBars_.back() = amplitudeBucketSum_ / static_cast<float>(amplitudeBucketCount_);
-    lastAmplitudeSample_ = now;
-    if (normalized > 0.0f) {
-        lastAudibleSample_ = now;
-    }
+    liveAmplitude_ = NormalizeAmplitude(rms);
+    lastAmplitudeSample_ = Clock::now();
 }
 
 void StatusPill::BeginFadeOut(std::chrono::milliseconds duration) {
@@ -479,28 +449,72 @@ void StatusPill::DrawPill(HDC memoryDc, int width, int height, float opacity) {
 
     if (state_ == StatusPillState::Recording) {
         const auto now = Clock::now();
-        std::array<float, 5> targetBars = amplitudeBars_;
-        if (lastAmplitudeSample_ == Clock::time_point{} ||
-            lastAudibleSample_ == Clock::time_point{} ||
-            now - lastAudibleSample_ > kSilenceCollapseDuration) {
-            targetBars.fill(0.0f);
-        }
+        const float targetAmplitude =
+            (lastAmplitudeSample_ != Clock::time_point{} && now - lastAmplitudeSample_ <= kAmplitudeIdleTimeout)
+            ? liveAmplitude_
+            : 0.0f;
+        const float smoothingAlpha = targetAmplitude > displayedAmplitude_
+            ? kMeterAttackAlpha
+            : kMeterReleaseAlpha;
+        displayedAmplitude_ += (targetAmplitude - displayedAmplitude_) * smoothingAlpha;
 
+        constexpr std::array<float, 5> kBarProfile = {0.42f, 0.68f, 1.0f, 0.68f, 0.42f};
         const float barWidth = ScaleF(3.0f);
         const float barGap = ScaleF(2.5f);
-        const float minHeight = ScaleF(2.0f);
+        const float minHeight = ScaleF(1.75f);
         const float maxHeight = ScaleF(18.0f);
         Gdiplus::SolidBrush recordingBrush(ColorWithOpacity(239, 68, 68, 1.0f, opacity));
 
-        for (size_t index = 0; index < smoothedBars_.size(); ++index) {
-            smoothedBars_[index] += (targetBars[index] - smoothedBars_[index]) * kSmoothingAlpha;
-            const float barHeight = minHeight + ((maxHeight - minHeight) * smoothedBars_[index]);
+        for (size_t index = 0; index < kBarProfile.size(); ++index) {
+            const float profile = kBarProfile[index] + ((1.0f - kBarProfile[index]) * displayedAmplitude_);
+            const float barLevel = std::clamp(displayedAmplitude_ * profile, 0.0f, 1.0f);
+            const float barHeight = minHeight + ((maxHeight - minHeight) * barLevel);
             const float x = slotX + static_cast<float>(index) * (barWidth + barGap);
             const float y = centerY - barHeight / 2.0f;
             Gdiplus::GraphicsPath barPath;
             AddRoundedRectangle(barPath, Gdiplus::RectF(x, y, barWidth, barHeight), barWidth / 2.0f);
             graphics.FillPath(&recordingBrush, &barPath);
         }
+        return;
+    }
+
+    if (state_ == StatusPillState::Transcribing) {
+        const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - stateStarted_).count();
+        const float pulsePhase = static_cast<float>(elapsed) / 220.0f;
+        const auto accentColor = ColorWithOpacity(245, 158, 11, 1.0f, opacity);
+        const auto textColor = ColorWithOpacity(255, 255, 255, 0.72f, opacity);
+        Gdiplus::SolidBrush accentBrush(accentColor);
+        Gdiplus::Pen accentPen(accentColor, ScaleF(1.35f));
+        accentPen.SetStartCap(Gdiplus::LineCapRound);
+        accentPen.SetEndCap(Gdiplus::LineCapRound);
+        Gdiplus::Pen textPen(textColor, ScaleF(1.2f));
+        textPen.SetStartCap(Gdiplus::LineCapRound);
+        textPen.SetEndCap(Gdiplus::LineCapRound);
+
+        constexpr std::array<float, 3> kWaveHeights = {0.48f, 0.92f, 0.62f};
+        const float waveBarWidth = ScaleF(2.2f);
+        const float waveBarGap = ScaleF(1.8f);
+        const float waveMinHeight = ScaleF(4.0f);
+        const float waveMaxHeight = ScaleF(10.0f);
+        for (size_t index = 0; index < kWaveHeights.size(); ++index) {
+            const float animatedScale = 0.78f + 0.22f * std::sin(pulsePhase + static_cast<float>(index) * 0.95f);
+            const float barHeight = waveMinHeight + (waveMaxHeight - waveMinHeight) * kWaveHeights[index] * animatedScale;
+            const float x = slotX + static_cast<float>(index) * (waveBarWidth + waveBarGap);
+            const float y = centerY - barHeight / 2.0f;
+            Gdiplus::GraphicsPath barPath;
+            AddRoundedRectangle(barPath, Gdiplus::RectF(x, y, waveBarWidth, barHeight), waveBarWidth / 2.0f);
+            graphics.FillPath(&accentBrush, &barPath);
+        }
+
+        const float arrowX = slotX + ScaleF(9.5f);
+        graphics.DrawLine(&accentPen, arrowX, centerY, arrowX + ScaleF(5.0f), centerY);
+        graphics.DrawLine(&accentPen, arrowX + ScaleF(3.1f), centerY - ScaleF(2.5f), arrowX + ScaleF(5.6f), centerY);
+        graphics.DrawLine(&accentPen, arrowX + ScaleF(3.1f), centerY + ScaleF(2.5f), arrowX + ScaleF(5.6f), centerY);
+
+        const float textX = slotX + ScaleF(17.5f);
+        graphics.DrawLine(&textPen, textX, centerY - ScaleF(4.0f), textX + ScaleF(8.5f), centerY - ScaleF(4.0f));
+        graphics.DrawLine(&textPen, textX, centerY, textX + ScaleF(11.0f), centerY);
+        graphics.DrawLine(&textPen, textX, centerY + ScaleF(4.0f), textX + ScaleF(6.5f), centerY + ScaleF(4.0f));
         return;
     }
 
@@ -542,6 +556,7 @@ void StatusPill::DrawPill(HDC memoryDc, int width, int height, float opacity) {
 
 RECT StatusPill::CalculateWindowRect(int width, int height) const {
     RECT trayRect{};
+    RECT workArea{};
     NOTIFYICONIDENTIFIER identifier{};
     identifier.cbSize = sizeof(identifier);
     identifier.hWnd = ownerWindow_;
@@ -553,34 +568,50 @@ RECT StatusPill::CalculateWindowRect(int width, int height) const {
         HMONITOR monitor = MonitorFromRect(&trayRect, MONITOR_DEFAULTTONEAREST);
         GetMonitorInfoW(monitor, &monitorInfo);
 
-        const int gap = Scale(8);
-        const int workLeft = static_cast<int>(monitorInfo.rcWork.left);
-        const int workTop = static_cast<int>(monitorInfo.rcWork.top);
-        const int workRight = static_cast<int>(monitorInfo.rcWork.right);
-        const int workBottom = static_cast<int>(monitorInfo.rcWork.bottom);
-        const int centerX = trayRect.left + ((trayRect.right - trayRect.left) / 2);
-        const bool horizontalTaskbar = trayRect.top >= workBottom || trayRect.bottom <= workTop;
-        const int idealLeft = horizontalTaskbar
-            ? workRight - width - Scale(kBaseClockAnchorRightMargin)
-            : centerX - (width / 2);
-        const int left = std::clamp(idealLeft, workLeft, workRight - width);
-        int bottom = trayRect.top - gap;
-        if (bottom - height < workTop) {
-            bottom = trayRect.bottom + gap + height;
-        }
+        workArea = monitorInfo.rcWork;
 
-        bottom = std::clamp(bottom, workTop + height, workBottom);
-        return RECT{left, bottom - height, left + width, bottom};
+        if (placement_ == StatusPillPlacement::TrayAnchor) {
+            const int gap = Scale(8);
+            const int workLeft = static_cast<int>(workArea.left);
+            const int workTop = static_cast<int>(workArea.top);
+            const int workRight = static_cast<int>(workArea.right);
+            const int workBottom = static_cast<int>(workArea.bottom);
+            const int centerX = trayRect.left + ((trayRect.right - trayRect.left) / 2);
+            const bool horizontalTaskbar = trayRect.top >= workBottom || trayRect.bottom <= workTop;
+            const int idealLeft = horizontalTaskbar
+                ? workRight - width - Scale(kBaseClockAnchorRightMargin)
+                : centerX - (width / 2);
+            const int left = std::clamp(idealLeft, workLeft, workRight - width);
+            int bottom = trayRect.top - gap;
+            if (bottom - height < workTop) {
+                bottom = trayRect.bottom + gap + height;
+            }
+
+            bottom = std::clamp(bottom, workTop + height, workBottom);
+            return RECT{left, bottom - height, left + width, bottom};
+        }
+    }
+    else {
+        MONITORINFO monitorInfo{};
+        monitorInfo.cbSize = sizeof(monitorInfo);
+        HMONITOR monitor = MonitorFromWindow(ownerWindow_, MONITOR_DEFAULTTOPRIMARY);
+        GetMonitorInfoW(monitor, &monitorInfo);
+        workArea = monitorInfo.rcWork;
     }
 
-    MONITORINFO monitorInfo{};
-    monitorInfo.cbSize = sizeof(monitorInfo);
-    HMONITOR monitor = MonitorFromWindow(ownerWindow_, MONITOR_DEFAULTTOPRIMARY);
-    GetMonitorInfoW(monitor, &monitorInfo);
-
-    const int right = monitorInfo.rcWork.right - Scale(12);
-    const int bottom = monitorInfo.rcWork.bottom - Scale(12);
-    return RECT{right - width, bottom - height, right, bottom};
+    const int margin = Scale(12);
+    switch (placement_) {
+    case StatusPillPlacement::ScreenTopLeft:
+        return RECT{workArea.left + margin, workArea.top + margin, workArea.left + margin + width, workArea.top + margin + height};
+    case StatusPillPlacement::ScreenTopRight:
+        return RECT{workArea.right - margin - width, workArea.top + margin, workArea.right - margin, workArea.top + margin + height};
+    case StatusPillPlacement::ScreenBottomLeft:
+        return RECT{workArea.left + margin, workArea.bottom - margin - height, workArea.left + margin + width, workArea.bottom - margin};
+    case StatusPillPlacement::ScreenBottomRight:
+    case StatusPillPlacement::TrayAnchor:
+    default:
+        return RECT{workArea.right - margin - width, workArea.bottom - margin - height, workArea.right - margin, workArea.bottom - margin};
+    }
 }
 
 UINT StatusPill::CurrentDpi() const {
