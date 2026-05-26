@@ -25,6 +25,7 @@ struct SettingsDialogValues {
     bool removeMistralApiKey = false;
     StatusPillPlacement statusPillPlacement = StatusPillPlacement::TrayAnchor;
     bool autoStartWithWindows = false;
+    bool useMediaPlayPauseToggle = false;
     bool showStatusPill = true;
     bool archiveEnabled = false;
     bool archivePersistTranscript = true;

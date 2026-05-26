@@ -17,14 +17,15 @@ BEGIN
 	EDITTEXT        IDC_SETTINGS_LANGUAGE_HINT,112,46,118,14,ES_AUTOHSCROLL | WS_TABSTOP
 	AUTOCHECKBOX    "Start VoxInsert with Windows",IDC_SETTINGS_START_WITH_WINDOWS,18,69,160,10
 	AUTOCHECKBOX    "Show status pill",IDC_SETTINGS_SHOW_STATUS_PILL,18,87,160,10
-	LTEXT           "Toggle recording hotkey:",IDC_SETTINGS_TOGGLE_HOTKEY_LABEL,18,108,88,8
-	CONTROL         "",IDC_SETTINGS_TOGGLE_HOTKEY,"msctls_hotkey32",WS_TABSTOP,112,105,70,14
-	LTEXT           "Cancel hotkey:",IDC_SETTINGS_CANCEL_HOTKEY_LABEL,18,128,88,8
-	CONTROL         "",IDC_SETTINGS_CANCEL_HOTKEY,"msctls_hotkey32",WS_TABSTOP,112,125,70,14
-	LTEXT           "Status pill placement:",IDC_SETTINGS_STATUS_PILL_POSITION_LABEL,18,148,88,8
-	COMBOBOX        IDC_SETTINGS_STATUS_PILL_POSITION,112,145,118,90,CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
-	LTEXT           "Click a hotkey field, then press the shortcut you want. VoxInsert pauses global hotkeys while this dialog is open.",IDC_SETTINGS_HOTKEY_HINT,18,168,214,20
-	LTEXT           "Settings are saved to %APPDATA%\VoxInsert\config.json and applied when you press Save.",IDC_SETTINGS_SAVE_HINT,18,192,214,20
+	AUTOCHECKBOX    "Use headset/media Play/Pause to toggle recording",IDC_SETTINGS_USE_MEDIA_PLAY_PAUSE_TOGGLE,18,103,212,10
+	LTEXT           "Toggle recording hotkey:",IDC_SETTINGS_TOGGLE_HOTKEY_LABEL,18,122,88,8
+	CONTROL         "",IDC_SETTINGS_TOGGLE_HOTKEY,"msctls_hotkey32",WS_TABSTOP,112,119,70,14
+	LTEXT           "Cancel hotkey:",IDC_SETTINGS_CANCEL_HOTKEY_LABEL,18,142,88,8
+	CONTROL         "",IDC_SETTINGS_CANCEL_HOTKEY,"msctls_hotkey32",WS_TABSTOP,112,139,70,14
+	LTEXT           "Status pill placement:",IDC_SETTINGS_STATUS_PILL_POSITION_LABEL,18,162,88,8
+	COMBOBOX        IDC_SETTINGS_STATUS_PILL_POSITION,112,159,118,90,CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+	LTEXT           "Click a hotkey field, then press the shortcut you want. VoxInsert pauses global hotkeys while this dialog is open.",IDC_SETTINGS_HOTKEY_HINT,18,178,214,16
+	LTEXT           "Settings are saved to %APPDATA%\VoxInsert\config.json and applied when you press Save.",IDC_SETTINGS_SAVE_HINT,18,196,214,16
 	LTEXT           "Model:",IDC_SETTINGS_OPENAI_MODEL_LABEL,18,30,88,8
 	EDITTEXT        IDC_SETTINGS_OPENAI_MODEL,112,27,118,14,ES_AUTOHSCROLL | WS_TABSTOP
 	LTEXT           "Credential target:",IDC_SETTINGS_OPENAI_TARGET_LABEL,18,49,88,8

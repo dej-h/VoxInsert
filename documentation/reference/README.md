@@ -1,16 +1,19 @@
-# API Reference Notes
+# Reference Notes
 
-This folder holds vendor-specific API notes for the transcription providers that matter to VoxInsert.
+This folder holds reference notes that matter to VoxInsert.
 
-These are working notes, not vendor documentation mirrors. They summarize the parts of the official docs and benchmark data that are directly useful for product and implementation decisions.
+Some files are vendor-specific API notes. Others are product or platform design notes for features that need to be captured before implementation.
+
+These are working notes, not documentation mirrors. They summarize the parts of the official docs, benchmark data, and design decisions that are directly useful for product and implementation work.
 
 ## Files
 
 1. [OpenAI transcription APIs](openai-transcription-api.md)
 2. [Mistral transcription APIs](mistral-transcription-api.md)
+3. [Transcript post-processing](transcript-post-processing.md)
 
 ## Scope
 
 - Snapshot date: 2026-05-24.
-- Official sources are the vendor docs linked inside each file.
+- Official sources are linked inside each file when applicable.
 - Benchmark notes are based on Artificial Analysis and should be treated as a point-in-time comparison, not a permanent ranking.

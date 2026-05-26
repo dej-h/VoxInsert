@@ -3,6 +3,8 @@
 #include "observability/logging.h"
 #include "resource.h"
 
+#include <winrt/base.h>
+
 #include <shellapi.h>
 
 #include <cwchar>
@@ -97,6 +99,18 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wordParam, LPARAM 
                 Utf8FromWide(context->config.toggleRecordingHotkey.displayName),
                 Utf8FromWide(context->config.cancelRecordingHotkey.displayName));
 
+            std::wstring smtcFailureReason;
+            if (!context->smtcController.Apply(
+                    window,
+                    kSmtcToggleMessage,
+                    context->config.system.useMediaPlayPauseToggle,
+                    context->logger,
+                    smtcFailureReason)) {
+                context->logger->warn("SMTC media Play/Pause toggle unavailable: {}", Utf8FromWide(smtcFailureReason));
+                ShowRuntimeInfo(*context, L"VoxInsert media button toggle", smtcFailureReason);
+            }
+            context->smtcController.SyncPlaybackActive(context->state == AppState::Recording);
+
             std::wstring startupRegistrationFailureReason;
             if (!ApplyStartupRegistrationFromConfig(*context, startupRegistrationFailureReason)) {
                 ShowRuntimeError(*context, L"VoxInsert startup settings", startupRegistrationFailureReason);
@@ -168,6 +182,12 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wordParam, LPARAM 
     case kOpenSettingsMessage:
         if (context != nullptr && context->logger != nullptr) {
             ShowSettingsDialogFromTray(*context);
+        }
+        return 0;
+
+    case kSmtcToggleMessage:
+        if (context != nullptr && context->logger != nullptr) {
+            HandleSmtcToggle(*context);
         }
         return 0;
 
@@ -246,6 +266,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wordParam, LPARAM 
             JoinPostRecordingWorker(*context);
             context->archiveService.Shutdown();
             context->statusPill.Destroy();
+            context->smtcController.Shutdown();
             context->hotkeyManager.UnregisterAll(window);
             context->logger->info("global hotkeys unregistered");
             RemoveTrayIcon(*context);
@@ -470,6 +491,23 @@ int RunAppHost(
         logger->info("VoxInsert exiting after config load failure");
         return 1;
     }
+
+    try {
+        winrt::init_apartment(winrt::apartment_type::single_threaded);
+    }
+    catch (const winrt::hresult_error& error) {
+        std::wstring failureReason = L"winrt::init_apartment failed: ";
+        failureReason += error.message().c_str();
+        logger->error("{}", Utf8FromWide(failureReason));
+        MessageBoxW(nullptr, failureReason.c_str(), L"VoxInsert startup failed", MB_OK | MB_ICONERROR);
+        return 1;
+    }
+
+    struct ApartmentGuard {
+        ~ApartmentGuard() {
+            winrt::uninit_apartment();
+        }
+    } apartmentGuard;
 
     if (!RegisterHiddenWindowClass(instance, logger)) {
         logger->info("VoxInsert exiting after startup failure");

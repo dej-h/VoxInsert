@@ -157,6 +157,7 @@ void SetState(AppContext& context, AppState nextState) {
         Utf8FromWide(StateLabel(nextState)));
 
     context.state = nextState;
+    context.smtcController.SyncPlaybackActive(nextState == AppState::Recording);
 
     switch (nextState) {
     case AppState::Idle:

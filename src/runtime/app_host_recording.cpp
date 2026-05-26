@@ -5,6 +5,24 @@
 
 namespace voxinsert {
 
+namespace {
+
+void HandleToggleRequest(AppContext& context, std::wstring_view sourceLabel) {
+    if (context.state == AppState::Idle) {
+        StartRecording(context);
+        return;
+    }
+
+    if (context.state == AppState::Recording) {
+        StopRecordingAndWriteWav(context);
+        return;
+    }
+
+    context.logger->info("{} ignored while state is {}", Utf8FromWide(sourceLabel), Utf8FromWide(StateLabel(context.state)));
+}
+
+} // namespace
+
 void StartRecording(AppContext& context) {
     std::wstring failureReason;
     if (!context.audioRecorder.Start(
@@ -142,15 +160,7 @@ void CancelRecording(AppContext& context) {
 void HandleHotkey(AppContext& context, WPARAM hotkeyId) {
     switch (hotkeyId) {
     case HotkeyManager::kToggleRecordingHotkeyId:
-        if (context.state == AppState::Idle) {
-            StartRecording(context);
-        }
-        else if (context.state == AppState::Recording) {
-            StopRecordingAndWriteWav(context);
-        }
-        else {
-            context.logger->info("toggle hotkey ignored while state is {}", Utf8FromWide(StateLabel(context.state)));
-        }
+        HandleToggleRequest(context, L"toggle hotkey");
         return;
 
     case HotkeyManager::kCancelRecordingHotkeyId:
@@ -164,6 +174,11 @@ void HandleHotkey(AppContext& context, WPARAM hotkeyId) {
     }
 
     context.logger->warn("unknown hotkey id received: {}", hotkeyId);
+}
+
+void HandleSmtcToggle(AppContext& context) {
+    context.logger->info("SMTC Play/Pause received");
+    HandleToggleRequest(context, L"SMTC Play/Pause");
 }
 
 } // namespace voxinsert

@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.25)
 
 project(VoxInsert
-    VERSION 0.1.0
+    VERSION 0.1.1
     LANGUAGES CXX
 )
 
@@ -25,6 +25,7 @@ add_executable(VoxInsert WIN32
     src/audio/wav_writer.cpp
     src/config/app_config.cpp
     src/input/hotkey_manager.cpp
+    src/input/smtc_controller.cpp
     src/insertion/text_injector.cpp
     src/main.cpp
     src/observability/logging.cpp
@@ -64,6 +65,7 @@ target_link_libraries(VoxInsert PRIVATE
     portaudio
     Shell32
     spdlog::spdlog
+    WindowsApp
 )
 
 target_compile_definitions(VoxInsert PRIVATE
