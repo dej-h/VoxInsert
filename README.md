@@ -4,6 +4,10 @@ VoxInsert is a Windows-native tray app for push-to-talk dictation. Press a globa
 
 It is built as a local-first utility: API keys stay in Windows Credential Manager, runtime settings live under AppData, temporary audio stays in the temp directory, and optional archiving is disabled by default.
 
+## Demo
+
+![VoxInsert dictation demo](assets/VoxInsertDemo.gif)
+
 ## What It Can Do
 
 - Run as a hidden Win32 tray app with a dedicated notification-area icon.
