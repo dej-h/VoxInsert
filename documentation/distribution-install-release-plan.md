@@ -84,7 +84,7 @@ The script builds the release executable, stages the required runtime files, run
 To package a specific version:
 
 ```powershell
-.\scripts\package-release.ps1 -Version v0.1.0
+.\scripts\package-release.ps1 -Version v0.1.1
 ```
 
 ## GitHub Actions
@@ -95,6 +95,93 @@ The repository has two release-related workflows:
 - `.github/workflows/release.yml` publishes GitHub Release assets when a `v*` tag is pushed.
 
 Both workflows build on `windows-latest`, set up MSVC, bootstrap a repo-local vcpkg, ensure Ninja is available, and run the same packaging script used locally.
+
+## Current Release Declaration
+
+The current release trigger is explicit:
+
+- update the repo version fields to the intended release version
+- merge that change to `main`
+- push a tag like `v0.1.1`
+
+Important distinction:
+
+- the pushed tag triggers the GitHub Release workflow
+- commit signing is separate and is not what causes the release to publish
+
+The current explicit version anchors are:
+
+- `CMakeLists.txt` project version
+- `vcpkg.json` `version-string`
+- `src/VoxInsert.manifest` assembly version
+
+If those files say `0.1.1` and the maintainer later pushes `v0.1.1`, the package name, release workflow, and app metadata stay aligned.
+
+## Future Automation Options
+
+There are three reasonable ways to automate releases from here.
+
+### Option 1: Keep Manual Tags
+
+This is the current model.
+
+Pros:
+
+- simplest workflow
+- easiest to reason about
+- release timing stays fully explicit
+- works cleanly with locally created signed tags
+
+Cons:
+
+- maintainer must remember to create and push the tag every release
+- release intent is not captured directly in the PR itself
+
+### Option 2: Version In PR, Auto-Tag On Merge
+
+In this model, the PR includes the version bump. After that PR merges to `main`, GitHub Actions reads the new version, creates the matching tag if it does not already exist, and the existing tagged-release workflow publishes the release.
+
+Pros:
+
+- closest fit to "this PR should ship as version X.Y.Z"
+- release intent is visible in code review
+- removes the manual tagging step
+- keeps the version bump under normal review instead of hiding it in automation
+
+Cons:
+
+- concurrent version-bump PRs can conflict
+- merging the version-bump PR effectively means "ship this now"
+- auto-created tags usually come from GitHub Actions rather than a maintainer's local signing key
+
+This is the recommended future automation path for VoxInsert if the goal is less manual release work without adding much workflow complexity.
+
+### Option 3: Label-Driven Or Bot-Driven Releases
+
+In this model, a PR gets a label such as `release-patch`, `release-minor`, or an exact version label. After merge, automation decides the next version, updates files, creates the tag, and publishes the release.
+
+Pros:
+
+- least manual release bookkeeping
+- avoids hand-editing version files in many PRs
+
+Cons:
+
+- most workflow complexity
+- the final release commit is bot-generated rather than the reviewed merge commit itself
+- signed release tags are harder to preserve cleanly
+- debugging release automation becomes a project of its own
+
+For this repo, that is probably more machinery than the project needs right now.
+
+## Recommended Maintainer Rule
+
+For now:
+
+- keep the explicit version bump in the PR when a release is intended
+- keep the manual tag push after merge if signed tags are important
+
+If manual tagging becomes too annoying later, move to Option 2 rather than jumping straight to a bot-managed semantic-release style workflow.
 
 ## Design Rules
 
