@@ -194,6 +194,7 @@ SettingsDialogValues BuildSettingsDialogValues(const AppContext& context) {
         context.logger);
     values.statusPillPlacement = context.config.ui.statusPillPlacement;
     values.autoStartWithWindows = context.config.system.autoStartWithWindows;
+    values.useMediaPlayPauseToggle = context.config.system.useMediaPlayPauseToggle;
     values.showStatusPill = context.config.ui.showStatusPill;
     values.archiveEnabled = context.config.archive.enabled;
     values.archivePersistTranscript = context.config.archive.persistTranscript;
@@ -217,6 +218,7 @@ AppConfig BuildConfigFromSettings(const AppConfig& currentConfig, const Settings
     nextConfig.ui.showStatusPill = values.showStatusPill;
     nextConfig.ui.statusPillPlacement = values.statusPillPlacement;
     nextConfig.system.autoStartWithWindows = values.autoStartWithWindows;
+    nextConfig.system.useMediaPlayPauseToggle = values.useMediaPlayPauseToggle;
     nextConfig.archive.enabled = values.archiveEnabled;
     nextConfig.archive.persistTranscript = values.archivePersistTranscript;
     nextConfig.archive.persistAudio = values.archivePersistAudio;

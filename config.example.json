@@ -37,6 +37,7 @@
   },
   "system": {
     "auto_start_with_windows": false,
+    "use_media_play_pause_toggle": false,
     "launch_minimized": true
   },
   "archive": {

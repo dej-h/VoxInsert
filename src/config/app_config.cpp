@@ -60,7 +60,8 @@ constexpr char kFallbackConfigJson[] = R"json({
         "status_pill_position": "tray_anchor"
   },
   "system": {
-        "auto_start_with_windows": false,
+                "auto_start_with_windows": false,
+        "use_media_play_pause_toggle": false,
     "launch_minimized": true
     },
     "archive": {
@@ -841,6 +842,10 @@ bool LoadConfiguredSystemSettings(const json& root, SystemConfig& system, std::w
         return false;
     }
 
+    if (!LoadConfiguredBoolean(root, "system", "use_media_play_pause_toggle", system.useMediaPlayPauseToggle, failureReason)) {
+        return false;
+    }
+
     if (!LoadConfiguredBoolean(root, "system", "launch_minimized", system.launchMinimized, failureReason)) {
         return false;
     }
@@ -1092,6 +1097,7 @@ bool SaveAppSettings(const AppConfig& config, const AppSettingsUpdate& settings,
     root["ui"]["show_status_pill"] = settings.ui.showStatusPill;
     root["ui"]["status_pill_position"] = StatusPillPlacementToConfigString(settings.ui.statusPillPlacement);
     root["system"]["auto_start_with_windows"] = settings.system.autoStartWithWindows;
+    root["system"]["use_media_play_pause_toggle"] = settings.system.useMediaPlayPauseToggle;
     root["system"]["launch_minimized"] = settings.system.launchMinimized;
     root["archive"]["enabled"] = settings.archive.enabled;
     root["archive"]["persist_transcript"] = settings.archive.persistTranscript;
