@@ -8,7 +8,6 @@ It is designed as a local-first desktop utility: API keys stay in Windows Creden
 
 ![VoxInsert dictation demo](assets/VoxInsertDemo.gif)
 
-## What It Can Do
 ## Why VoxInsert?
 
 VoxInsert is meant for people who want fast dictation without changing their writing workflow. It does not open a big editor or ask you to copy text around. It sits in the notification area, listens only during an active hotkey recording session, transcribes through your configured provider, and inserts the result into the focused text field.
