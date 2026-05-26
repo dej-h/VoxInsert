@@ -60,6 +60,7 @@ struct UiConfig {
 
 struct SystemConfig {
     bool autoStartWithWindows = false;
+    bool useMediaPlayPauseToggle = false;
     bool launchMinimized = true;
 };
 

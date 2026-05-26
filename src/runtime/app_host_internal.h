@@ -7,6 +7,7 @@
 #include "audio/wav_writer.h"
 #include "config/app_config.h"
 #include "input/hotkey_manager.h"
+#include "input/smtc_controller.h"
 #include "insertion/text_injector.h"
 #include "testing/app_host_smoke_test.h"
 #include "transcription/transcription_client.h"
@@ -30,6 +31,7 @@ inline constexpr UINT kTrayCallbackMessage = WM_APP + 1;
 inline constexpr UINT kPostRecordingPhaseMessage = WM_APP + 2;
 inline constexpr UINT kPostRecordingCompleteMessage = WM_APP + 3;
 inline constexpr UINT kOpenSettingsMessage = WM_APP + 4;
+inline constexpr UINT kSmtcToggleMessage = WM_APP + 5;
 inline constexpr UINT_PTR kTrayStatusResetTimerId = 2;
 inline constexpr UINT kTrayMenuCommandQuit = 1003;
 inline constexpr UINT kTrayMenuCommandReloadConfig = 1004;
@@ -75,6 +77,7 @@ struct AppContext {
     AudioRecorder audioRecorder;
     AppHostSmokeTest smokeTest;
     HotkeyManager hotkeyManager;
+    SmtcController smtcController;
     TextInjector textInjector;
     TranscriptionClient transcriptionClient;
     ArchiveService archiveService;
@@ -137,6 +140,7 @@ void StopRecordingAndWriteWav(AppContext& context);
 void HandlePostRecordingPhase(AppContext& context, WPARAM phaseParam);
 void HandlePostRecordingComplete(AppContext& context);
 void CancelRecording(AppContext& context);
+void HandleSmtcToggle(AppContext& context);
 void HandleHotkey(AppContext& context, WPARAM hotkeyId);
 void RemoveTrayIcon(AppContext& context);
 bool AddTrayIcon(AppContext& context);

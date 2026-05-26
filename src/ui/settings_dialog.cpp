@@ -56,6 +56,7 @@ constexpr int kGeneralTabControlIds[] = {
     IDC_SETTINGS_LANGUAGE_HINT,
     IDC_SETTINGS_START_WITH_WINDOWS,
     IDC_SETTINGS_SHOW_STATUS_PILL,
+    IDC_SETTINGS_USE_MEDIA_PLAY_PAUSE_TOGGLE,
     IDC_SETTINGS_TOGGLE_HOTKEY_LABEL,
     IDC_SETTINGS_TOGGLE_HOTKEY,
     IDC_SETTINGS_CANCEL_HOTKEY_LABEL,
@@ -545,6 +546,7 @@ void ApplyDefaultSettingsToDialog(HWND dialog) {
     CheckDlgButton(dialog, IDC_SETTINGS_ARCHIVE_AUDIO, defaultConfig.archive.persistAudio ? BST_CHECKED : BST_UNCHECKED);
     SetTextControl(dialog, IDC_SETTINGS_ARCHIVE_FOLDER, defaultConfig.archive.folderPath);
     CheckDlgButton(dialog, IDC_SETTINGS_START_WITH_WINDOWS, defaultConfig.system.autoStartWithWindows ? BST_CHECKED : BST_UNCHECKED);
+    CheckDlgButton(dialog, IDC_SETTINGS_USE_MEDIA_PLAY_PAUSE_TOGGLE, defaultConfig.system.useMediaPlayPauseToggle ? BST_CHECKED : BST_UNCHECKED);
     CheckDlgButton(dialog, IDC_SETTINGS_SHOW_STATUS_PILL, defaultConfig.ui.showStatusPill ? BST_CHECKED : BST_UNCHECKED);
     SelectPlacementCombo(dialog, defaultConfig.ui.statusPillPlacement);
     UpdatePlacementEnabledState(dialog);
@@ -591,6 +593,7 @@ INT_PTR CALLBACK SettingsDialogProc(HWND dialog, UINT message, WPARAM wordParam,
         values = reinterpret_cast<SettingsDialogValues*>(longParam);
         SetWindowLongPtrW(dialog, GWLP_USERDATA, longParam);
         CheckDlgButton(dialog, IDC_SETTINGS_START_WITH_WINDOWS, values->autoStartWithWindows ? BST_CHECKED : BST_UNCHECKED);
+        CheckDlgButton(dialog, IDC_SETTINGS_USE_MEDIA_PLAY_PAUSE_TOGGLE, values->useMediaPlayPauseToggle ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(dialog, IDC_SETTINGS_SHOW_STATUS_PILL, values->showStatusPill ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(dialog, IDC_SETTINGS_ARCHIVE_ENABLED, values->archiveEnabled ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(dialog, IDC_SETTINGS_ARCHIVE_TRANSCRIPT, values->archivePersistTranscript ? BST_CHECKED : BST_UNCHECKED);
@@ -785,6 +788,7 @@ INT_PTR CALLBACK SettingsDialogProc(HWND dialog, UINT message, WPARAM wordParam,
 
                 values->statusPillPlacement = ReadPlacementSelection(dialog);
                 values->autoStartWithWindows = IsDlgButtonChecked(dialog, IDC_SETTINGS_START_WITH_WINDOWS) == BST_CHECKED;
+                values->useMediaPlayPauseToggle = IsDlgButtonChecked(dialog, IDC_SETTINGS_USE_MEDIA_PLAY_PAUSE_TOGGLE) == BST_CHECKED;
                 values->showStatusPill = IsDlgButtonChecked(dialog, IDC_SETTINGS_SHOW_STATUS_PILL) == BST_CHECKED;
             }
             EndDialog(dialog, IDOK);

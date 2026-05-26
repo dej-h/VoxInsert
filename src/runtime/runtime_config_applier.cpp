@@ -59,6 +59,45 @@ bool ApplyRuntimeConfig(AppContext& context, AppConfig nextConfig, std::wstring&
         return false;
     }
 
+    if (!context.smtcController.Apply(
+            context.window,
+            kSmtcToggleMessage,
+            context.config.system.useMediaPlayPauseToggle,
+            context.logger,
+            failureReason)) {
+        std::wstring restoreFailureReason;
+        if (!RestoreRegisteredHotkeys(context, previousConfig, restoreFailureReason)) {
+            failureReason += L" The previous hotkeys could not be restored: ";
+            failureReason += restoreFailureReason;
+        }
+
+        RestoreUiConfig(context, appliedUiConfig, previousConfig);
+
+        std::wstring restoreStartupFailureReason;
+        if (!ApplyStartupRegistrationFromConfig(context, restoreStartupFailureReason)) {
+            failureReason += L" The previous startup registration could not be restored: ";
+            failureReason += restoreStartupFailureReason;
+        }
+
+        std::wstring restoreSmtcFailureReason;
+        if (!context.smtcController.Apply(
+                context.window,
+                kSmtcToggleMessage,
+                context.config.system.useMediaPlayPauseToggle,
+                context.logger,
+                restoreSmtcFailureReason)) {
+            failureReason += L" The previous media Play/Pause integration could not be restored: ";
+            failureReason += restoreSmtcFailureReason;
+        }
+        else {
+            context.smtcController.SyncPlaybackActive(context.state == AppState::Recording);
+        }
+
+        return false;
+    }
+
+    context.smtcController.SyncPlaybackActive(context.state == AppState::Recording);
+
     ResetTrayStatusToCurrentState(context);
     return true;
 }
