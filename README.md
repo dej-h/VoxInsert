@@ -228,7 +228,7 @@ The core runtime is split by responsibility:
 
 ## More Documentation
 
-- [VoxInsert_Updated_Build_Guide.md](VoxInsert_Updated_Build_Guide.md)
+- [documentation/distribution-install-release-plan.md](documentation/distribution-install-release-plan.md)
 - [documentation/reference/README.md](documentation/reference/README.md)
 - [documentation/reference/openai-transcription-api.md](documentation/reference/openai-transcription-api.md)
 - [documentation/reference/mistral-transcription-api.md](documentation/reference/mistral-transcription-api.md)
