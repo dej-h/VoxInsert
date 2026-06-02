@@ -71,6 +71,10 @@ std::wstring AudioRecorder::BuildMicrophoneError(std::wstring_view action, std::
 }
 
 bool AudioRecorder::Start(const AudioConfig& config, AmplitudeCallback amplitudeCallback, std::wstring& failureReason) {
+    return Start(config, std::move(amplitudeCallback), FrameSink{}, failureReason);
+}
+
+bool AudioRecorder::Start(const AudioConfig& config, AmplitudeCallback amplitudeCallback, FrameSink frameSink, std::wstring& failureReason) {
     if (recordingRequested_) {
         failureReason = L"AudioRecorder::Start called while a recording is already in progress.";
         return false;
@@ -95,7 +99,7 @@ bool AudioRecorder::Start(const AudioConfig& config, AmplitudeCallback amplitude
     }
 
     recordingRequested_ = true;
-    worker_ = std::thread(&AudioRecorder::RecordingThreadMain, this, config, std::move(amplitudeCallback));
+    worker_ = std::thread(&AudioRecorder::RecordingThreadMain, this, config, std::move(amplitudeCallback), std::move(frameSink));
 
     std::unique_lock lock(mutex_);
     startupCondition_.wait(lock, [this]() { return startupCompleted_; });
@@ -155,7 +159,7 @@ void AudioRecorder::JoinWorker() noexcept {
     }
 }
 
-void AudioRecorder::RecordingThreadMain(AudioConfig config, AmplitudeCallback amplitudeCallback) noexcept {
+void AudioRecorder::RecordingThreadMain(AudioConfig config, AmplitudeCallback amplitudeCallback, FrameSink frameSink) noexcept {
     PaStream* stream = nullptr;
     std::vector<int16_t> capturedSamples;
 
@@ -250,6 +254,10 @@ void AudioRecorder::RecordingThreadMain(AudioConfig config, AmplitudeCallback am
         }
 
         capturedSamples.insert(capturedSamples.end(), readBuffer.begin(), readBuffer.end());
+
+        if (frameSink) {
+            frameSink(readBuffer.data(), readBuffer.size());
+        }
 
         if (amplitudeCallback) {
             amplitudeCallback(ComputeRmsAmplitude(readBuffer));

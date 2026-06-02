@@ -7,6 +7,48 @@ namespace voxinsert {
 
 namespace {
 
+bool ShouldUseStreaming(const AppContext& context) {
+    return context.config.transcription.streaming.enabled && !context.options.smokeTest;
+}
+
+bool TryStartStreamingRecording(
+    AppContext& context,
+    AudioRecorder::AmplitudeCallback amplitudeCallback,
+    std::wstring& failureReason) {
+    if (context.streamingController == nullptr) {
+        context.streamingController = std::make_unique<StreamingRecordingController>();
+    }
+
+    StreamingRecordingRequest request;
+    request.audioRecorder = &context.audioRecorder;
+    request.wavWriter = &context.wavWriter;
+    request.textInjector = &context.textInjector;
+    request.archiveService = &context.archiveService;
+    request.fallbackClient = &context.transcriptionClient;
+    request.config = &context.config;
+    request.logger = context.logger;
+    request.ownerWindow = context.window;
+    request.smokeTest = context.options.smokeTest;
+    request.amplitudeCallback = std::move(amplitudeCallback);
+    request.isShutdownRequested = [&context]() { return context.shutdownRequested.load(); };
+    request.onPhaseChanged = [&context](PostRecordingPhase phase) {
+        const AppState nextState = (phase == PostRecordingPhase::Inserting)
+            ? AppState::Inserting
+            : AppState::Transcribing;
+        PostMessageW(
+            context.window,
+            kPostRecordingPhaseMessage,
+            static_cast<WPARAM>(static_cast<int>(nextState)),
+            0);
+    };
+
+    return context.streamingController->Start(request, failureReason);
+}
+
+bool IsStreamingActive(const AppContext& context) {
+    return context.streamingController != nullptr && context.streamingController->IsActive();
+}
+
 void HandleToggleRequest(AppContext& context, std::wstring_view sourceLabel) {
     if (context.state == AppState::Idle) {
         StartRecording(context);
@@ -24,13 +66,27 @@ void HandleToggleRequest(AppContext& context, std::wstring_view sourceLabel) {
 } // namespace
 
 void StartRecording(AppContext& context) {
+    auto amplitudeCallback = [&context](float rms) {
+        context.statusPill.PostAmplitudeSample(rms);
+    };
+
+    if (ShouldUseStreaming(context)) {
+        std::wstring streamingFailure;
+        if (TryStartStreamingRecording(context, amplitudeCallback, streamingFailure)) {
+            context.logger->info(
+                "recording started (streaming) using the current default microphone: {}",
+                Utf8FromWide(context.audioRecorder.ActiveDeviceName()));
+            SetState(context, AppState::Recording);
+            return;
+        }
+
+        context.logger->warn(
+            "streaming transcription could not start ({}); falling back to the one-shot path",
+            Utf8FromWide(streamingFailure));
+    }
+
     std::wstring failureReason;
-    if (!context.audioRecorder.Start(
-            context.config.audio,
-            [&context](float rms) {
-                context.statusPill.PostAmplitudeSample(rms);
-            },
-            failureReason)) {
+    if (!context.audioRecorder.Start(context.config.audio, amplitudeCallback, failureReason)) {
         ShowRuntimeError(context, L"VoxInsert microphone error", failureReason);
         SetState(context, AppState::Idle);
         return;
@@ -40,6 +96,25 @@ void StartRecording(AppContext& context) {
         "recording started using the current default microphone: {}",
         Utf8FromWide(context.audioRecorder.ActiveDeviceName()));
     SetState(context, AppState::Recording);
+}
+
+void RunStreamingFinalizePipeline(AppContext& context) noexcept {
+    const StreamingRecordingResult result = context.streamingController->Finish();
+
+    if (result.hasRecordingPath) {
+        StoreLastRecordingPath(context, result.recordingPath);
+    }
+
+    if (result.hasTranscript) {
+        StoreLastTranscript(context, result.transcript);
+    }
+
+    if (!result.success) {
+        CompletePostRecordingWithError(context, result.errorTitle, result.failureReason);
+        return;
+    }
+
+    CompletePostRecordingSuccessfully(context, result.showDone);
 }
 
 void RunPostRecordingPipeline(AppContext& context) noexcept {
@@ -95,13 +170,25 @@ void StopRecordingAndWriteWav(AppContext& context) {
     SetState(context, AppState::SavingRecording);
     JoinPostRecordingWorker(context);
 
+    const bool streaming = IsStreamingActive(context);
+
     try {
-        context.postRecordingWorker = std::thread([&context]() {
-            RunPostRecordingPipeline(context);
+        context.postRecordingWorker = std::thread([&context, streaming]() {
+            if (streaming) {
+                RunStreamingFinalizePipeline(context);
+            }
+            else {
+                RunPostRecordingPipeline(context);
+            }
         });
     }
     catch (const std::exception& exception) {
-        context.audioRecorder.Cancel();
+        if (streaming) {
+            context.streamingController->Cancel();
+        }
+        else {
+            context.audioRecorder.Cancel();
+        }
         std::wstring failureReason = L"Could not start the background transcription worker: ";
         failureReason += WideFromUtf8(exception.what());
         ShowRuntimeError(context, L"VoxInsert transcription error", failureReason);
@@ -152,7 +239,12 @@ void HandlePostRecordingComplete(AppContext& context) {
 }
 
 void CancelRecording(AppContext& context) {
-    context.audioRecorder.Cancel();
+    if (IsStreamingActive(context)) {
+        context.streamingController->Cancel();
+    }
+    else {
+        context.audioRecorder.Cancel();
+    }
     context.logger->info("recording cancelled");
     SetState(context, AppState::Idle);
 }

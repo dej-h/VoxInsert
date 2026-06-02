@@ -11,6 +11,8 @@ These are working notes, not documentation mirrors. They summarize the parts of 
 1. [OpenAI transcription APIs](openai-transcription-api.md)
 2. [Mistral transcription APIs](mistral-transcription-api.md)
 3. [Transcript post-processing](transcript-post-processing.md)
+4. [Streaming transcription architecture](streaming-transcription-architecture.md)
+5. [Streaming transcription implementation plan](streaming-transcription-implementation-plan.md)
 
 ## Scope
 

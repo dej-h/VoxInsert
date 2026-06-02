@@ -30,14 +30,26 @@ struct AudioConfig {
 
 struct OpenAiTranscriptionProviderConfig {
     std::string model = "gpt-4o-transcribe";
+    std::string streamingModel = "gpt-realtime-whisper";
     std::string credentialTarget = "VoiceAgentTyper/OpenAI";
     std::string prompt = "The user is dictating technical prompts for coding agents, IDEs, VS Code, GitHub Copilot, Claude Code, Codex, Python, C++, FastAPI, LangChain, OpenAI, Docker, GitHub, APIs, terminals, embeddings, rerankers, and software engineering workflows.";
 };
 
 struct MistralTranscriptionProviderConfig {
     std::string model = "voxtral-mini-latest";
+    std::string streamingModel = "voxtral-mini-transcribe-realtime-2602";
     std::string credentialTarget = "VoiceAgentTyper/Mistral";
     std::string contextBias = "VoxInsert,VS_Code,GitHub_Copilot,Claude_Code,Codex,Python,C++,FastAPI,LangChain,OpenAI,Docker,GitHub,APIs,terminals,embeddings,rerankers";
+};
+
+// Controls the real-time WebSocket transcription path. Streaming is the default; when disabled
+// VoxInsert falls back to the one-shot file-upload transcription flow.
+struct StreamingTranscriptionConfig {
+    bool enabled = true;
+    std::string provider = "openai_realtime";
+    int appendBatchMs = 80;
+    int finalizeTimeoutMs = 8000;
+    bool fallbackToFileTranscription = true;
 };
 
 struct TranscriptionConfig {
@@ -45,6 +57,7 @@ struct TranscriptionConfig {
     std::string languageHint = "en";
     OpenAiTranscriptionProviderConfig openAi;
     MistralTranscriptionProviderConfig mistral;
+    StreamingTranscriptionConfig streaming;
 };
 
 struct InsertionConfig {

@@ -16,18 +16,23 @@ namespace voxinsert {
 class AudioRecorder {
 public:
     using AmplitudeCallback = std::function<void(float)>;
+    // Invoked on the recording thread for each captured buffer. Used by the
+    // streaming path to forward audio without blocking the audio thread; the
+    // callback must be cheap and non-blocking (e.g. enqueue and return).
+    using FrameSink = std::function<void(const int16_t* data, size_t sampleCount)>;
 
     AudioRecorder() = default;
     ~AudioRecorder();
 
     bool Start(const AudioConfig& config, AmplitudeCallback amplitudeCallback, std::wstring& failureReason);
+    bool Start(const AudioConfig& config, AmplitudeCallback amplitudeCallback, FrameSink frameSink, std::wstring& failureReason);
     bool Stop(std::vector<int16_t>& samples, std::wstring& failureReason);
     void Cancel() noexcept;
     bool IsRecording() const noexcept;
     std::wstring ActiveDeviceName() const;
 
 private:
-    void RecordingThreadMain(AudioConfig config, AmplitudeCallback amplitudeCallback) noexcept;
+    void RecordingThreadMain(AudioConfig config, AmplitudeCallback amplitudeCallback, FrameSink frameSink) noexcept;
     bool EnsureInitialized(std::wstring& failureReason);
     void JoinWorker() noexcept;
     std::wstring BuildMicrophoneError(std::wstring_view action, std::string_view portAudioErrorText) const;
