@@ -64,7 +64,7 @@ jobs:
       - name: Bootstrap vcpkg
         run: |
           if (-not (Test-Path -LiteralPath $env:VCPKG_ROOT)) {
-            git clone --depth 1 --filter=blob:none https://github.com/microsoft/vcpkg.git $env:VCPKG_ROOT
+            git clone https://github.com/microsoft/vcpkg.git $env:VCPKG_ROOT
           }
           & (Join-Path $env:VCPKG_ROOT 'bootstrap-vcpkg.bat')
 
