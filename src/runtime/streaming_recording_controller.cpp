@@ -633,65 +633,30 @@ StreamingRecordingResult StreamingRecordingController::Finish() noexcept {
             return result;
         }
 
-        // 4. Persist the WAV from retained PCM.
         std::filesystem::path wavPath;
-        const auto writeWavStartedAt = StreamingClock::now();
-        if (request_.wavWriter != nullptr &&
-            request_.wavWriter->WritePcm16Mono(samples, request_.config->audio.sampleRate, wavPath, failureReason)) {
-            result.hasRecordingPath = true;
-            result.recordingPath = wavPath;
-            if (request_.logger != nullptr) {
-                request_.logger->info("recording written to {}", Utf8FromWide(wavPath.wstring()));
+        int64_t writeWavMs = 0;
+        bool wavWriteAttempted = false;
+        const auto writeWavIfNeeded = [&]() {
+            if (wavWriteAttempted) {
+                return;
             }
-        }
-        else if (request_.logger != nullptr) {
-            request_.logger->warn("streaming path could not write the WAV file: {}", Utf8FromWide(failureReason));
-        }
-        const int64_t writeWavMs = ElapsedMilliseconds(writeWavStartedAt, StreamingClock::now());
 
-        if (request_.smokeTest) {
-            if (request_.logger != nullptr) {
-                request_.logger->info("smoke-test: skipping streaming insertion");
-            }
-            result.success = true;
-            result.showDone = false;
-            return result;
-        }
-
-        // 5. Fall back to the one-shot file transcription if streaming did not
-        //    produce a usable transcript.
-        const bool transcriptUsable = !streamingFailed && !transcriptUtf8.empty();
-        if (!transcriptUsable) {
-            if (streaming.fallbackToFileTranscription && result.hasRecordingPath && request_.fallbackClient != nullptr) {
+            wavWriteAttempted = true;
+            const auto writeWavStartedAt = StreamingClock::now();
+            std::wstring wavFailureReason;
+            if (request_.wavWriter != nullptr &&
+                request_.wavWriter->WritePcm16Mono(samples, request_.config->audio.sampleRate, wavPath, wavFailureReason)) {
+                result.hasRecordingPath = true;
+                result.recordingPath = wavPath;
                 if (request_.logger != nullptr) {
-                    request_.logger->warn(
-                        "streaming transcript unavailable ({}); falling back to file transcription",
-                        streamingFailureReason.empty() ? "empty result" : Utf8FromWide(streamingFailureReason));
-                }
-                std::string fallbackTranscript;
-                std::wstring fallbackFailure;
-                if (request_.fallbackClient->Transcribe(
-                        request_.config->transcription, wavPath, fallbackTranscript, fallbackFailure)) {
-                    transcriptUtf8 = std::move(fallbackTranscript);
-                    result.fallbackUsed = true;
-                }
-                else {
-                    result.errorTitle = L"VoxInsert transcription error";
-                    result.failureReason = fallbackFailure;
-                    return result;
+                    request_.logger->info("recording written to {}", Utf8FromWide(wavPath.wstring()));
                 }
             }
-            else {
-                result.errorTitle = L"VoxInsert transcription error";
-                result.failureReason = streamingFailureReason.empty()
-                    ? L"The streaming transcription returned no text."
-                    : streamingFailureReason;
-                return result;
+            else if (request_.logger != nullptr) {
+                request_.logger->warn("streaming path could not write the WAV file: {}", Utf8FromWide(wavFailureReason));
             }
-        }
-
-        result.hasTranscript = true;
-        result.transcript = WideFromUtf8(transcriptUtf8);
+            writeWavMs = ElapsedMilliseconds(writeWavStartedAt, StreamingClock::now());
+        };
 
         const auto enqueueArchive = [this, &samples, &transcriptUtf8](bool insertionSucceeded) {
             if (request_.archiveService == nullptr || !request_.config->archive.enabled) {
@@ -708,21 +673,108 @@ StreamingRecordingResult StreamingRecordingController::Finish() noexcept {
             });
         };
 
-        if (request_.onPhaseChanged) {
-            request_.onPhaseChanged(PostRecordingPhase::Inserting);
-        }
+        int64_t insertionMs = 0;
+        const auto insertTranscript = [&]() {
+            if (request_.onPhaseChanged) {
+                request_.onPhaseChanged(PostRecordingPhase::Inserting);
+            }
 
-        // 6. Insert the final transcript.
-        const auto insertionStartedAt = StreamingClock::now();
-        if (request_.textInjector != nullptr &&
-            !request_.textInjector->InsertText(
-                request_.ownerWindow, request_.config->insertion, result.transcript, failureReason)) {
-            enqueueArchive(false);
-            result.errorTitle = L"VoxInsert insertion error";
-            result.failureReason = failureReason;
+            const auto insertionStartedAt = StreamingClock::now();
+            if (request_.textInjector != nullptr &&
+                !request_.textInjector->InsertText(
+                    request_.ownerWindow, request_.config->insertion, result.transcript, failureReason)) {
+                result.errorTitle = L"VoxInsert insertion error";
+                result.failureReason = failureReason;
+                insertionMs = ElapsedMilliseconds(insertionStartedAt, StreamingClock::now());
+                return false;
+            }
+
+            insertionMs = ElapsedMilliseconds(insertionStartedAt, StreamingClock::now());
+            return true;
+        };
+
+        if (request_.smokeTest) {
+            writeWavIfNeeded();
+            if (request_.logger != nullptr) {
+                request_.logger->info("smoke-test: skipping streaming insertion");
+            }
+            result.success = true;
+            result.showDone = false;
             return result;
         }
-        const int64_t insertionMs = ElapsedMilliseconds(insertionStartedAt, StreamingClock::now());
+
+        // 4. If streaming already produced a trusted final transcript, insert
+        //    immediately. WAV persistence and archive enqueue happen afterward
+        //    so disk work is no longer on the trusted-streaming text path.
+        const bool transcriptUsable = !streamingFailed && !transcriptUtf8.empty();
+        if (transcriptUsable) {
+            result.hasTranscript = true;
+            result.transcript = WideFromUtf8(transcriptUtf8);
+
+            if (!insertTranscript()) {
+                writeWavIfNeeded();
+                enqueueArchive(false);
+                return result;
+            }
+
+            writeWavIfNeeded();
+            enqueueArchive(true);
+
+            if (request_.logger != nullptr) {
+                request_.logger->debug(
+                    "post-recording latency outcome=streaming_success stop_recording={}ms transcription={}ms insert={}ms wav_write_after_insert={}ms total={}ms transcript_utf8_bytes={}",
+                    stopRecordingMs,
+                    transcriptionMs,
+                    insertionMs,
+                    writeWavMs,
+                    ElapsedMilliseconds(workflowStartedAt, StreamingClock::now()),
+                    transcriptUtf8.size());
+                request_.logger->info("streaming transcription inserted into the focused text field via clipboard paste");
+            }
+
+            result.success = true;
+            result.showDone = true;
+            return result;
+        }
+
+        // 5. Fall back to the one-shot file transcription if streaming did not
+        //    produce a usable transcript. The fallback client still needs a WAV
+        //    file, so only this path persists before transcription/insertion.
+        writeWavIfNeeded();
+        if (streaming.fallbackToFileTranscription && result.hasRecordingPath && request_.fallbackClient != nullptr) {
+            if (request_.logger != nullptr) {
+                request_.logger->warn(
+                    "streaming transcript unavailable ({}); falling back to file transcription",
+                    streamingFailureReason.empty() ? "empty result" : Utf8FromWide(streamingFailureReason));
+            }
+            std::string fallbackTranscript;
+            std::wstring fallbackFailure;
+            if (request_.fallbackClient->Transcribe(
+                    request_.config->transcription, wavPath, fallbackTranscript, fallbackFailure)) {
+                transcriptUtf8 = std::move(fallbackTranscript);
+                result.fallbackUsed = true;
+            }
+            else {
+                result.errorTitle = L"VoxInsert transcription error";
+                result.failureReason = fallbackFailure;
+                return result;
+            }
+        }
+        else {
+            result.errorTitle = L"VoxInsert transcription error";
+            result.failureReason = streamingFailureReason.empty()
+                ? L"The streaming transcription returned no text."
+                : streamingFailureReason;
+            return result;
+        }
+
+        result.hasTranscript = true;
+        result.transcript = WideFromUtf8(transcriptUtf8);
+
+        if (!insertTranscript()) {
+            enqueueArchive(false);
+            return result;
+        }
 
         enqueueArchive(true);
 

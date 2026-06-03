@@ -51,6 +51,7 @@ Scope: local Windows desktop app latency from keybind/SMTC toggle to microphone 
   - Fix: retain PCM in preallocated slabs and queue references to the same slabs. Batch by span list or ring cursors rather than appending vectors.
 
 - [Major] `src/audio/audio_recorder.cpp:132`, `src/audio/audio_recorder.cpp:279` - Stopping a recording copies the whole retained sample vector.
+  - Status 2026-06-03: fixed. `AudioRecorder::Stop` now moves `samples_` into the caller output instead of copying the whole retained buffer.
   - Breaks: audio-captured-to-ready latency after stop.
   - Why it matters: the worker moves `capturedSamples` into `samples_`, then `Stop` copies `samples_` into the caller output. Longer recordings can copy megabytes on the finalization path.
   - Fix: move out with `samples = std::move(samples_)` after checking failure state, or return a retained audio object that owns the buffer without another copy.
@@ -76,6 +77,7 @@ Scope: local Windows desktop app latency from keybind/SMTC toggle to microphone 
   - Fix: make stop post a finalize request and return immediately to the UI. Enforce smaller provider-specific finalization budgets. If finalization is not already in progress from live partials, fallback quickly.
 
 - [Major] `src/runtime/streaming_recording_controller.cpp:310`, `src/runtime/streaming_recording_controller.cpp:324`, `src/runtime/streaming_recording_controller.cpp:402` - Even after the streaming transcript is assembled, the code writes the WAV before inserting text.
+  - Status 2026-06-03: fixed for trusted streaming transcripts. The streaming-success path now inserts first, then writes the WAV and enqueues archive work. Fallback still writes the WAV before transcription because the file-transcription client needs it.
   - Breaks: fastest final-transcript-to-user-visible result.
   - Why it matters: `transcriptUtf8` is available before WAV persistence, but `WritePcm16Mono` runs before `InsertText`. Disk path creation and writing happen on the finalization worker before the user sees text.
   - Fix: if streaming produced a trusted transcript, insert first and persist WAV/archive afterward on a separate worker. Keep the retained PCM in memory for fallback and archive.
@@ -209,12 +211,12 @@ ROI here means expected user-visible return divided by implementation cost. "Lat
 | 80 ms append batch floor | High | Can reduce captured-audio-to-backend latency by roughly 60-70 ms if reduced to 10-20 ms and accepted by provider. | Small/Medium | Easy to experiment with; benchmark provider behavior before shipping. |
 | RMS computed when status pill disabled | Medium | Saves a per-buffer scan and `sqrt` only when the UI meter is off. | Small | Cheap cleanup, but not a top latency bottleneck if the pill is normally on. |
 | Multiple PCM copies before backend | High | Cuts CPU and memory bandwidth during recording; improves stability under load. | Medium | Fold into slab/ring redesign. |
-| Stop copies retained sample vector | Medium | Saves a whole-recording copy on stop; impact grows with recording length. | Small | Likely quick win: move instead of copy after failure checks. |
+| Stop copies retained sample vector | Medium | Saves a whole-recording copy on stop; impact grows with recording length. | Small | Status 2026-06-03: fixed with move-out on `AudioRecorder::Stop`. |
 | OpenAI resampler allocates per append | Medium/High | Removes per-append allocation for OpenAI realtime. | Small/Medium | Capture at 24 kHz for OpenAI may outperform resampling if device/provider path behaves well. |
 | Base64/JSON allocation per append | Medium | Reduces streaming pump CPU and allocator churn; smaller effect than audio-thread fixes. | Medium | Use reusable buffers or fixed-shape serialization. |
 | Unbounded pre-connect encoded backlog | High | Prevents memory growth and large delayed flushes under slow network. | Medium | More reliability/tail-latency ROI than happy-path speed. |
 | Stop/finalize joins and 8 s timeout | Very high | Can remove the worst stop-to-ready tail. Savings can be seconds on backend stalls. | Medium | Set an interactive budget and fallback early. |
-| WAV write before insertion | High | Lets text appear before disk persistence. Savings depend on recording length and disk state. | Medium | Good user-perceived latency win. |
+| WAV write before insertion | High | Lets text appear before disk persistence. Savings depend on recording length and disk state. | Medium | Status 2026-06-03: fixed on trusted streaming success; fallback still needs pre-transcription WAV. |
 | Fallback writes WAV then rereads it | Medium | Saves disk I/O and a full-file memory read on fallback only. | Medium | Important if streaming fallback happens often. |
 | Long fallback retries/timeouts | High | Bounds pathological stop-to-ready delays from minutes to an intentional interactive budget. | Small/Medium | Product decision: fast fail vs background recovery. |
 | Clipboard restore/retry/sleeps | High | Can save 125-500+ ms after transcript readiness, especially with clipboard contention. | Small/Medium | Low-latency mode should default restore off or use a direct insertion path. |
@@ -251,7 +253,8 @@ ROI here means expected user-visible return divided by implementation cost. "Lat
 1. Make microphone capture prewarmed and started before any backend/credential/network work. Status 2026-06-03: capture now starts before backend/session startup; full PortAudio prewarming remains open.
 2. Replace `BlockingBoundedQueue` and per-chunk `std::vector` ownership with a preallocated SPSC audio ring. Status 2026-06-03: fixed for capture-to-streaming audio.
 3. Treat any streaming audio/event drop as untrusted streaming output and fallback immediately. Status 2026-06-03: fixed.
-4. Move insertion before WAV persistence when streaming has a trusted final transcript.
+4. Move insertion before WAV persistence when streaming has a trusted final transcript. Status 2026-06-03: fixed.
 5. Remove or lower the 80 ms append batch floor after provider-specific measurement. Status 2026-06-03: lowered to provider-capped 20 ms; runtime measurement still needed.
 6. Enforce streaming sample-rate compatibility and construct resamplers from the actual capture format.
-7. Add CI gates: `ctest`, warning-as-error, RTTI/exception policy, and sanitizer/clang-cl coverage.
+7. Move retained audio out on stop instead of copying it. Status 2026-06-03: fixed.
+8. Add CI gates: `ctest`, warning-as-error, RTTI/exception policy, and sanitizer/clang-cl coverage.

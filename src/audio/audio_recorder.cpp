@@ -3,18 +3,39 @@
 #include "observability/logging.h"
 
 #include <portaudio.h>
+#include <spdlog/spdlog.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <utility>
 
 namespace voxinsert {
 namespace {
 
+using AudioClock = std::chrono::steady_clock;
+
 constexpr wchar_t kMicrophonePermissionHelp[] =
     L"If this is a desktop microphone-permission problem, open Settings > Privacy & security > Microphone and turn on both 'Microphone access' and 'Let desktop apps access your microphone'.";
 constexpr unsigned long kMaxInteractiveFramesPerBuffer = 256;
+
+int64_t AudioClockTicks() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(AudioClock::now().time_since_epoch()).count();
+}
+
+int64_t ElapsedMilliseconds(AudioClock::time_point startedAt, AudioClock::time_point finishedAt) {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(finishedAt - startedAt).count();
+}
+
+int64_t ElapsedMillisecondsSinceTick(int64_t startedAtTicks) {
+    if (startedAtTicks <= 0) {
+        return -1;
+    }
+
+    return AudioClockTicks() - startedAtTicks;
+}
 
 std::wstring WideFromPortAudioError(std::string_view errorText) {
     return WideFromUtf8(errorText);
@@ -97,6 +118,7 @@ bool AudioRecorder::Start(const AudioConfig& config, AmplitudeCallback amplitude
         startupCompleted_ = false;
         startupSucceeded_ = false;
     }
+    stopRequestedAtTicks_.store(0, std::memory_order_release);
 
     recordingRequested_ = true;
     worker_ = std::thread(&AudioRecorder::RecordingThreadMain, this, config, std::move(amplitudeCallback), std::move(frameSink));
@@ -114,28 +136,59 @@ bool AudioRecorder::Start(const AudioConfig& config, AmplitudeCallback amplitude
 }
 
 bool AudioRecorder::Stop(std::vector<int16_t>& samples, std::wstring& failureReason) {
+    const auto stopStartedAt = AudioClock::now();
     if (!recordingRequested_ && !worker_.joinable()) {
         failureReason = L"AudioRecorder::Stop called while no recording is in progress.";
         return false;
     }
 
-    recordingRequested_ = false;
+    const bool workerWasJoinable = worker_.joinable();
+    stopRequestedAtTicks_.store(AudioClockTicks(), std::memory_order_release);
+    recordingRequested_.store(false, std::memory_order_release);
+    const auto stopSignalSentAt = AudioClock::now();
     JoinWorker();
+    const auto workerJoinedAt = AudioClock::now();
 
-    std::scoped_lock lock(mutex_);
+    const auto lockStartedAt = AudioClock::now();
+    std::unique_lock lock(mutex_);
+    const auto lockAcquiredAt = AudioClock::now();
     if (!workerFailureReason_.empty()) {
         failureReason = workerFailureReason_;
         samples_.clear();
+        if (auto* logger = spdlog::default_logger_raw()) {
+            logger->debug(
+                "audio recorder stop latency outcome=worker_failure stop_signal={}ms join_wait={}ms lock_wait={}ms total={}ms worker_joinable={}",
+                ElapsedMilliseconds(stopStartedAt, stopSignalSentAt),
+                ElapsedMilliseconds(stopSignalSentAt, workerJoinedAt),
+                ElapsedMilliseconds(lockStartedAt, lockAcquiredAt),
+                ElapsedMilliseconds(stopStartedAt, AudioClock::now()),
+                workerWasJoinable);
+        }
         return false;
     }
 
-    samples = samples_;
+    const auto sampleMoveStartedAt = AudioClock::now();
+    samples = std::move(samples_);
+    const size_t returnedSampleCount = samples.size();
     samples_.clear();
+    const auto finishedAt = AudioClock::now();
+    if (auto* logger = spdlog::default_logger_raw()) {
+        logger->debug(
+            "audio recorder stop latency outcome=success stop_signal={}ms join_wait={}ms lock_wait={}ms sample_move={}ms total={}ms worker_joinable={} returned_samples={}",
+            ElapsedMilliseconds(stopStartedAt, stopSignalSentAt),
+            ElapsedMilliseconds(stopSignalSentAt, workerJoinedAt),
+            ElapsedMilliseconds(lockStartedAt, lockAcquiredAt),
+            ElapsedMilliseconds(sampleMoveStartedAt, finishedAt),
+            ElapsedMilliseconds(stopStartedAt, finishedAt),
+            workerWasJoinable,
+            returnedSampleCount);
+    }
     return true;
 }
 
 void AudioRecorder::Cancel() noexcept {
-    recordingRequested_ = false;
+    stopRequestedAtTicks_.store(AudioClockTicks(), std::memory_order_release);
+    recordingRequested_.store(false, std::memory_order_release);
     JoinWorker();
 
     const std::scoped_lock lock(mutex_);
@@ -240,9 +293,22 @@ void AudioRecorder::RecordingThreadMain(AudioConfig config, AmplitudeCallback am
     const uint64_t maxFrames = static_cast<uint64_t>(config.sampleRate) * static_cast<uint64_t>(std::max(config.maxRecordingSeconds, 1));
     std::vector<int16_t> readBuffer(static_cast<size_t>(framesPerRead) * static_cast<size_t>(config.channelCount));
 
+    uint64_t readCount = 0;
+    uint64_t overflowCount = 0;
+    int64_t finalReadMs = 0;
+    int64_t maxReadMs = 0;
+    bool stoppedAfterRead = false;
+
     while (recordingRequested_) {
+        const auto readStartedAt = AudioClock::now();
         const PaError readError = Pa_ReadStream(stream, readBuffer.data(), framesPerRead);
+        const auto readFinishedAt = AudioClock::now();
+        finalReadMs = ElapsedMilliseconds(readStartedAt, readFinishedAt);
+        maxReadMs = std::max(maxReadMs, finalReadMs);
+        ++readCount;
+        stoppedAfterRead = !recordingRequested_.load(std::memory_order_acquire);
         if (readError == paInputOverflowed) {
+            ++overflowCount;
             continue;
         }
 
@@ -253,14 +319,14 @@ void AudioRecorder::RecordingThreadMain(AudioConfig config, AmplitudeCallback am
             break;
         }
 
+        if (amplitudeCallback) {
+            amplitudeCallback(ComputeRmsAmplitude(readBuffer));
+        }
+
         capturedSamples.insert(capturedSamples.end(), readBuffer.begin(), readBuffer.end());
 
         if (frameSink) {
             frameSink(readBuffer.data(), readBuffer.size());
-        }
-
-        if (amplitudeCallback) {
-            amplitudeCallback(ComputeRmsAmplitude(readBuffer));
         }
 
         const uint64_t capturedFrames = static_cast<uint64_t>(capturedSamples.size()) / static_cast<uint64_t>(config.channelCount);
@@ -272,13 +338,39 @@ void AudioRecorder::RecordingThreadMain(AudioConfig config, AmplitudeCallback am
         }
     }
 
-    Pa_StopStream(stream);
-    Pa_CloseStream(stream);
-    recordingRequested_ = false;
+    const int64_t stopObservedAfterRequestMs =
+        ElapsedMillisecondsSinceTick(stopRequestedAtTicks_.load(std::memory_order_acquire));
+    const auto paStopStartedAt = AudioClock::now();
+    const PaError stopError = Pa_StopStream(stream);
+    const auto paStopFinishedAt = AudioClock::now();
+    const auto paCloseStartedAt = AudioClock::now();
+    const PaError closeError = Pa_CloseStream(stream);
+    const auto paCloseFinishedAt = AudioClock::now();
+    recordingRequested_.store(false, std::memory_order_release);
 
+    const auto sampleHandoffStartedAt = AudioClock::now();
     const std::scoped_lock lock(mutex_);
+    const size_t capturedSampleCount = capturedSamples.size();
     if (workerFailureReason_.empty()) {
         samples_ = std::move(capturedSamples);
+    }
+    const auto sampleHandoffFinishedAt = AudioClock::now();
+
+    if (auto* logger = spdlog::default_logger_raw()) {
+        logger->debug(
+            "audio recorder worker stop latency stop_observed_after_request={}ms final_read={}ms max_read={}ms read_count={} overflow_count={} stopped_after_read={} pa_stop={}ms pa_stop_error={} pa_close={}ms pa_close_error={} sample_handoff={}ms captured_samples={}",
+            stopObservedAfterRequestMs,
+            finalReadMs,
+            maxReadMs,
+            readCount,
+            overflowCount,
+            stoppedAfterRead,
+            ElapsedMilliseconds(paStopStartedAt, paStopFinishedAt),
+            static_cast<int>(stopError),
+            ElapsedMilliseconds(paCloseStartedAt, paCloseFinishedAt),
+            static_cast<int>(closeError),
+            ElapsedMilliseconds(sampleHandoffStartedAt, sampleHandoffFinishedAt),
+            capturedSampleCount);
     }
 }
 

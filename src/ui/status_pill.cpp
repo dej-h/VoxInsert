@@ -20,18 +20,18 @@ constexpr wchar_t kStatusPillWindowClassName[] = L"VoxInsert.StatusPill";
 constexpr UINT_PTR kAnimationTimerId = 1;
 constexpr UINT kAnimationFrameMs = 16;
 constexpr UINT kAmplitudeMessage = WM_APP + 51;
-constexpr float kNoiseFloor = 0.010f;
-constexpr float kNoiseCeiling = 0.08f;
-constexpr float kSilenceThreshold = 0.08f;
-constexpr float kMeterGamma = 0.45f;
-constexpr float kMeterAttackAlpha = 0.42f;
-constexpr float kMeterReleaseAlpha = 0.14f;
+constexpr float kNoiseFloor = 0.006f;
+constexpr float kNoiseCeiling = 0.16f;
+constexpr float kSilenceThreshold = 0.02f;
+constexpr float kMeterGamma = 0.60f;
+constexpr float kMeterAttackAlpha = 0.65f;
+constexpr float kMeterReleaseAlpha = 0.24f;
 constexpr auto kFadeInDuration = std::chrono::milliseconds(120);
 constexpr auto kDefaultFadeOutDuration = std::chrono::milliseconds(200);
 constexpr auto kErrorFadeOutDuration = std::chrono::milliseconds(300);
 constexpr auto kDoneHoldDuration = std::chrono::milliseconds(600);
 constexpr auto kErrorHoldDuration = std::chrono::milliseconds(2400);
-constexpr auto kAmplitudeIdleTimeout = std::chrono::milliseconds(120);
+constexpr auto kAmplitudeIdleTimeout = std::chrono::milliseconds(350);
 constexpr int kAmplitudeEncodingScale = 10000;
 constexpr int kBasePillHeight = 28;
 constexpr int kBaseMinimumPillWidth = 60;
@@ -380,6 +380,8 @@ void StatusPill::SetState(StatusPillState state, std::wstring_view errorText) {
         liveAmplitude_ = 0.0f;
         displayedAmplitude_ = 0.0f;
         lastAmplitudeSample_ = {};
+        pendingAmplitude_.store(0, std::memory_order_relaxed);
+        amplitudeMessagePending_.store(false, std::memory_order_release);
     }
 
     if (state_ == StatusPillState::Done) {
@@ -402,7 +404,12 @@ void StatusPill::PostAmplitudeSample(float rms) noexcept {
     }
 
     const int encodedAmplitude = std::clamp(static_cast<int>(rms * static_cast<float>(kAmplitudeEncodingScale)), 0, kAmplitudeEncodingScale);
-    PostMessageW(window_, kAmplitudeMessage, static_cast<WPARAM>(encodedAmplitude), 0);
+    pendingAmplitude_.store(encodedAmplitude, std::memory_order_relaxed);
+    if (!amplitudeMessagePending_.exchange(true, std::memory_order_acq_rel)) {
+        if (PostMessageW(window_, kAmplitudeMessage, 0, 0) == 0) {
+            amplitudeMessagePending_.store(false, std::memory_order_release);
+        }
+    }
 }
 
 void StatusPill::Reanchor() {
@@ -465,7 +472,10 @@ LRESULT StatusPill::HandleMessage(UINT message, WPARAM wordParam, LPARAM longPar
         return 0;
 
     case kAmplitudeMessage:
-        HandleAmplitudeSample(static_cast<float>(wordParam) / static_cast<float>(kAmplitudeEncodingScale));
+        amplitudeMessagePending_.store(false, std::memory_order_release);
+        HandleAmplitudeSample(
+            static_cast<float>(pendingAmplitude_.load(std::memory_order_acquire)) /
+            static_cast<float>(kAmplitudeEncodingScale));
         return 0;
     }
 
