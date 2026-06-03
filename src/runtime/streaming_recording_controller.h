@@ -69,9 +69,9 @@ public:
     StreamingRecordingController(const StreamingRecordingController&) = delete;
     StreamingRecordingController& operator=(const StreamingRecordingController&) = delete;
 
-    // Connects the backend session and starts capturing/streaming audio. On
-    // failure nothing is left running so the caller can fall back to the
-    // one-shot recording path.
+    // Starts capture first, then connects the backend session. If capture
+    // starts but backend startup fails, the recording stays active and Finish
+    // falls back to the one-shot transcription path using retained PCM.
     bool Start(const StreamingRecordingRequest& request, std::wstring& failureReason);
 
     // Stops capture, commits the utterance, waits for the final transcript,
@@ -110,6 +110,7 @@ private:
     std::wstring backendFailureReason_;
 
     std::atomic<bool> active_{false};
+    std::atomic<bool> audioForwardingEnabled_{false};
     std::atomic<bool> backpressureObserved_{false};
     std::atomic<bool> sessionSendFailed_{false};
     std::atomic<std::uint64_t> nextSequence_{0};

@@ -5,6 +5,7 @@ Scope: local Windows desktop app latency from keybind/SMTC toggle to microphone 
 ## Findings
 
 - [Blocker] `src/runtime/streaming_recording_controller.cpp:97`, `src/runtime/streaming_recording_controller.cpp:108`, `src/runtime/streaming_recording_controller.cpp:117`, `src/transcription/openai_realtime_streaming_service.cpp:152`, `src/transcription/mistral_realtime_streaming_service.cpp:107` - Recording start does backend/session work before microphone capture starts.
+  - Status 2026-06-03: fixed in `src/runtime/streaming_recording_controller.cpp`; see `documentation/latency-first-blocker-capture-first-results.md` for before/after evidence.
   - Breaks: zero hot-path blocking, bypass cold-path work, deterministic keybind-to-capture latency.
   - Why it matters: the toggle path creates a backend session, reads credentials, initializes WebSocket state, and starts backend machinery before `AudioRecorder::Start` is called. Even though `webSocket_.start()` is asynchronous, credential access and session setup still sit before capture. A slow Credential Manager call or backend setup failure delays the first audio frame.
   - Fix: start/prewarm audio first, or keep a warmed capture/session coordinator alive. Cache validated credential handles/strings outside the keypress path. Connect the streaming backend in parallel with capture and buffer raw PCM in a preallocated ring until the session is ready.

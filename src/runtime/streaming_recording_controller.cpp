@@ -34,6 +34,10 @@ std::unique_ptr<IStreamingTranscriptionBackend> CreateBackend(const std::string&
     return nullptr;
 }
 
+bool IsSupportedStreamingProvider(const std::string& provider) {
+    return provider == "openai_realtime" || provider == "mistral_realtime";
+}
+
 } // namespace
 
 StreamingRecordingController::StreamingRecordingController()
@@ -44,6 +48,8 @@ StreamingRecordingController::~StreamingRecordingController() {
 }
 
 bool StreamingRecordingController::Start(const StreamingRecordingRequest& request, std::wstring& failureReason) {
+    const auto startupStartedAt = StreamingClock::now();
+
     if (active_.load()) {
         failureReason = L"Streaming recording is already in progress.";
         return false;
@@ -59,8 +65,7 @@ bool StreamingRecordingController::Start(const StreamingRecordingRequest& reques
     const StreamingTranscriptionConfig& streaming = request_.config->transcription.streaming;
     appendBatchMs_ = streaming.appendBatchMs;
 
-    backend_ = CreateBackend(streaming.provider);
-    if (backend_ == nullptr) {
+    if (!IsSupportedStreamingProvider(streaming.provider)) {
         failureReason = L"Unsupported streaming transcription provider '";
         failureReason += WideFromUtf8(streaming.provider);
         failureReason += L"'.";
@@ -82,6 +87,7 @@ bool StreamingRecordingController::Start(const StreamingRecordingRequest& reques
     finalized_ = false;
     failed_ = false;
     backendFailureReason_.clear();
+    audioForwardingEnabled_.store(false);
     backpressureObserved_.store(false);
     sessionSendFailed_.store(false);
     nextSequence_.store(0);
@@ -94,30 +100,16 @@ bool StreamingRecordingController::Start(const StreamingRecordingRequest& reques
     audioQueue_.Reset();
     eventQueue_.Reset();
 
-    session_ = backend_->CreateSession(
-        request_.config->transcription,
-        sessionId_,
-        [this](BackendTranscriptEvent event) { OnBackendEvent(std::move(event)); },
-        request_.logger,
-        failureReason);
-    if (session_ == nullptr) {
-        backend_.reset();
-        return false;
-    }
-
-    if (!session_->Start(failureReason)) {
-        session_.reset();
-        backend_.reset();
-        return false;
-    }
-
-    eventPump_ = std::jthread([this](std::stop_token stopToken) { EventPumpMain(std::move(stopToken)); });
-    audioPump_ = std::jthread([this](std::stop_token stopToken) { AudioPumpMain(std::move(stopToken)); });
-
+    audioForwardingEnabled_.store(true);
+    const auto captureStartStartedAt = StreamingClock::now();
     const bool recorderStarted = request_.audioRecorder->Start(
         request_.config->audio,
         request_.amplitudeCallback,
         [this](const int16_t* data, size_t sampleCount) {
+            if (!audioForwardingEnabled_.load()) {
+                return;
+            }
+
             CapturedAudioChunk chunk;
             chunk.sessionId = sessionId_;
             chunk.utteranceId = utteranceId_;
@@ -129,20 +121,192 @@ bool StreamingRecordingController::Start(const StreamingRecordingRequest& reques
             }
         },
         failureReason);
+    const auto captureStartedAt = StreamingClock::now();
+    const int64_t captureStartMs = ElapsedMilliseconds(captureStartStartedAt, captureStartedAt);
 
     if (!recorderStarted) {
-        StopWorkers();
-        if (session_ != nullptr) {
-            session_->Close();
-            session_.reset();
-        }
+        audioForwardingEnabled_.store(false);
         backend_.reset();
         return false;
     }
 
     active_.store(true);
+
+    const auto recordBackendStartupFailure = [this](std::wstring reason) {
+        audioForwardingEnabled_.store(false);
+        audioQueue_.Close();
+        sessionSendFailed_.store(true);
+        {
+            std::scoped_lock lock(finalizeMutex_);
+            failed_ = true;
+            backendFailureReason_ = std::move(reason);
+        }
+    };
+
+    const auto backendSetupStartedAt = StreamingClock::now();
+    try {
+        backend_ = CreateBackend(streaming.provider);
+        if (backend_ == nullptr) {
+            failureReason = L"Unsupported streaming transcription provider '";
+            failureReason += WideFromUtf8(streaming.provider);
+            failureReason += L"'.";
+            recordBackendStartupFailure(failureReason);
+            return true;
+        }
+
+        session_ = backend_->CreateSession(
+            request_.config->transcription,
+            sessionId_,
+            [this](BackendTranscriptEvent event) { OnBackendEvent(std::move(event)); },
+            request_.logger,
+            failureReason);
+        if (session_ == nullptr) {
+            backend_.reset();
+            recordBackendStartupFailure(failureReason);
+            if (request_.logger != nullptr) {
+                request_.logger->warn(
+                    "streaming backend session could not be created after capture started ({}); recording will continue and use fallback transcription on stop",
+                    Utf8FromWide(failureReason));
+                request_.logger->debug(
+                    "streaming startup latency order=capture_first backend_ready=false capture_start={}ms backend_setup_after_capture={}ms total={}ms provider={} queued_audio_chunks={}",
+                    captureStartMs,
+                    ElapsedMilliseconds(backendSetupStartedAt, StreamingClock::now()),
+                    ElapsedMilliseconds(startupStartedAt, StreamingClock::now()),
+                    streaming.provider,
+                    audioQueue_.Size());
+            }
+            return true;
+        }
+
+        if (!session_->Start(failureReason)) {
+            session_->Close();
+            session_.reset();
+            backend_.reset();
+            recordBackendStartupFailure(failureReason);
+            if (request_.logger != nullptr) {
+                request_.logger->warn(
+                    "streaming backend session could not start after capture started ({}); recording will continue and use fallback transcription on stop",
+                    Utf8FromWide(failureReason));
+                request_.logger->debug(
+                    "streaming startup latency order=capture_first backend_ready=false capture_start={}ms backend_setup_after_capture={}ms total={}ms provider={} queued_audio_chunks={}",
+                    captureStartMs,
+                    ElapsedMilliseconds(backendSetupStartedAt, StreamingClock::now()),
+                    ElapsedMilliseconds(startupStartedAt, StreamingClock::now()),
+                    streaming.provider,
+                    audioQueue_.Size());
+            }
+            return true;
+        }
+    }
+    catch (const std::exception& exception) {
+        failureReason = L"Unexpected streaming backend startup failure after capture started: " + WideFromUtf8(exception.what());
+        if (session_ != nullptr) {
+            session_->Close();
+            session_.reset();
+        }
+        backend_.reset();
+        recordBackendStartupFailure(failureReason);
+        if (request_.logger != nullptr) {
+            request_.logger->warn(
+                "streaming backend startup threw after capture started ({}); recording will continue and use fallback transcription on stop",
+                Utf8FromWide(failureReason));
+            request_.logger->debug(
+                "streaming startup latency order=capture_first backend_ready=false capture_start={}ms backend_setup_after_capture={}ms total={}ms provider={} queued_audio_chunks={}",
+                captureStartMs,
+                ElapsedMilliseconds(backendSetupStartedAt, StreamingClock::now()),
+                ElapsedMilliseconds(startupStartedAt, StreamingClock::now()),
+                streaming.provider,
+                audioQueue_.Size());
+        }
+        return true;
+    }
+    catch (...) {
+        failureReason = L"Unexpected streaming backend startup failure after capture started.";
+        if (session_ != nullptr) {
+            session_->Close();
+            session_.reset();
+        }
+        backend_.reset();
+        recordBackendStartupFailure(failureReason);
+        if (request_.logger != nullptr) {
+            request_.logger->warn(
+                "streaming backend startup threw after capture started; recording will continue and use fallback transcription on stop");
+            request_.logger->debug(
+                "streaming startup latency order=capture_first backend_ready=false capture_start={}ms backend_setup_after_capture={}ms total={}ms provider={} queued_audio_chunks={}",
+                captureStartMs,
+                ElapsedMilliseconds(backendSetupStartedAt, StreamingClock::now()),
+                ElapsedMilliseconds(startupStartedAt, StreamingClock::now()),
+                streaming.provider,
+                audioQueue_.Size());
+        }
+        return true;
+    }
+
+    const auto backendReadyAt = StreamingClock::now();
+    const int64_t backendSetupAfterCaptureMs = ElapsedMilliseconds(backendSetupStartedAt, backendReadyAt);
+    const size_t queuedAudioChunksBeforePumps = audioQueue_.Size();
+
+    try {
+        eventPump_ = std::jthread([this](std::stop_token stopToken) { EventPumpMain(std::move(stopToken)); });
+        audioPump_ = std::jthread([this](std::stop_token stopToken) { AudioPumpMain(std::move(stopToken)); });
+    }
+    catch (const std::exception& exception) {
+        failureReason = L"Could not start streaming worker threads after capture started: " + WideFromUtf8(exception.what());
+        if (session_ != nullptr) {
+            session_->Close();
+            session_.reset();
+        }
+        backend_.reset();
+        StopWorkers();
+        recordBackendStartupFailure(failureReason);
+        if (request_.logger != nullptr) {
+            request_.logger->warn(
+                "streaming worker startup failed after capture started ({}); recording will continue and use fallback transcription on stop",
+                Utf8FromWide(failureReason));
+            request_.logger->debug(
+                "streaming startup latency order=capture_first backend_ready=false capture_start={}ms backend_setup_after_capture={}ms total={}ms provider={} queued_audio_chunks={}",
+                captureStartMs,
+                backendSetupAfterCaptureMs,
+                ElapsedMilliseconds(startupStartedAt, StreamingClock::now()),
+                streaming.provider,
+                queuedAudioChunksBeforePumps);
+        }
+        return true;
+    }
+    catch (...) {
+        failureReason = L"Could not start streaming worker threads after capture started.";
+        if (session_ != nullptr) {
+            session_->Close();
+            session_.reset();
+        }
+        backend_.reset();
+        StopWorkers();
+        recordBackendStartupFailure(failureReason);
+        if (request_.logger != nullptr) {
+            request_.logger->warn(
+                "streaming worker startup failed after capture started; recording will continue and use fallback transcription on stop");
+            request_.logger->debug(
+                "streaming startup latency order=capture_first backend_ready=false capture_start={}ms backend_setup_after_capture={}ms total={}ms provider={} queued_audio_chunks={}",
+                captureStartMs,
+                backendSetupAfterCaptureMs,
+                ElapsedMilliseconds(startupStartedAt, StreamingClock::now()),
+                streaming.provider,
+                queuedAudioChunksBeforePumps);
+        }
+        return true;
+    }
+    const auto pumpsStartedAt = StreamingClock::now();
+
     if (request_.logger != nullptr) {
         request_.logger->info("streaming transcription session started (provider={})", streaming.provider);
+        request_.logger->debug(
+            "streaming startup latency order=capture_first backend_ready=true capture_start={}ms backend_setup_after_capture={}ms pumps_start_after_capture={}ms total={}ms provider={} queued_audio_chunks={}",
+            captureStartMs,
+            backendSetupAfterCaptureMs,
+            ElapsedMilliseconds(captureStartedAt, pumpsStartedAt),
+            ElapsedMilliseconds(startupStartedAt, pumpsStartedAt),
+            streaming.provider,
+            queuedAudioChunksBeforePumps);
     }
     return true;
 }
@@ -211,6 +375,27 @@ void StreamingRecordingController::EventPumpMain(std::stop_token stopToken) noex
             }
             finalizeCondition_.notify_all();
         }
+        else if (event.kind == BackendTranscriptEventKind::SessionClosed) {
+            std::wstring closeReason;
+            bool notifyClosedFailure = false;
+            {
+                std::scoped_lock lock(finalizeMutex_);
+                if (!finalized_ && !failed_) {
+                    failed_ = true;
+                    backendFailureReason_ = event.failureReason.empty()
+                        ? L"Streaming transcription session closed before a final transcript arrived."
+                        : event.failureReason;
+                    closeReason = backendFailureReason_;
+                    notifyClosedFailure = true;
+                }
+            }
+            if (notifyClosedFailure) {
+                if (request_.logger != nullptr) {
+                    request_.logger->warn("streaming session closed before finalize: {}", Utf8FromWide(closeReason));
+                }
+                finalizeCondition_.notify_all();
+            }
+        }
     }
 }
 
@@ -223,6 +408,7 @@ void StreamingRecordingController::OnBackendEvent(BackendTranscriptEvent event) 
 }
 
 void StreamingRecordingController::StopWorkers() noexcept {
+    audioForwardingEnabled_.store(false);
     audioQueue_.Close();
     eventQueue_.Close();
     if (audioPump_.joinable()) {
@@ -251,6 +437,7 @@ StreamingRecordingResult StreamingRecordingController::Finish() noexcept {
         // 1. Stop capture and collect the retained PCM (source of truth).
         std::vector<int16_t> samples;
         std::wstring failureReason;
+        audioForwardingEnabled_.store(false);
         const auto stopRecordingStartedAt = StreamingClock::now();
         const bool stopped = request_.audioRecorder->Stop(samples, failureReason);
         const int64_t stopRecordingMs = ElapsedMilliseconds(stopRecordingStartedAt, StreamingClock::now());
@@ -280,12 +467,23 @@ StreamingRecordingResult StreamingRecordingController::Finish() noexcept {
         // deliver a final transcript, so skip the timeout and fall back
         // immediately instead of stalling for finalizeTimeoutMs.
         const bool sessionAlive = commitSucceeded && !sessionSendFailed_.load();
+        const int finalizeWaitMs = std::max(streaming.finalizeTimeoutMs, 250);
+        bool finalizeCompleted = true;
         if (sessionAlive) {
             std::unique_lock<std::mutex> lock(finalizeMutex_);
-            finalizeCondition_.wait_for(
+            finalizeCompleted = finalizeCondition_.wait_for(
                 lock,
-                std::chrono::milliseconds(std::max(streaming.finalizeTimeoutMs, 250)),
+                std::chrono::milliseconds(finalizeWaitMs),
                 [this]() { return finalized_ || failed_; });
+            if (!finalizeCompleted && backendFailureReason_.empty()) {
+                backendFailureReason_ = L"Streaming finalize timed out waiting for a backend final event.";
+            }
+        }
+        if (sessionAlive && !finalizeCompleted && request_.logger != nullptr) {
+            request_.logger->warn(
+                "streaming finalize timed out after {}ms waiting for backend final event (provider={})",
+                finalizeWaitMs,
+                streaming.provider);
         }
 
         if (session_ != nullptr) {
@@ -440,6 +638,8 @@ StreamingRecordingResult StreamingRecordingController::Finish() noexcept {
 }
 
 void StreamingRecordingController::Cancel() noexcept {
+    audioForwardingEnabled_.store(false);
+
     if (request_.audioRecorder != nullptr) {
         request_.audioRecorder->Cancel();
     }
