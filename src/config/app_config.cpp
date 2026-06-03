@@ -45,7 +45,7 @@ constexpr char kFallbackConfigJson[] = R"json({
         "streaming": {
             "enabled": true,
             "provider": "openai_realtime",
-            "append_batch_ms": 80,
+            "append_batch_ms": 20,
             "finalize_timeout_ms": 8000,
             "fallback_to_file_transcription": true
         }

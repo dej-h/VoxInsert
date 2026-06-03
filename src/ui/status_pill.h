@@ -5,6 +5,7 @@
 #include <windows.h>
 
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <memory>
 #include <string>
@@ -79,6 +80,8 @@ private:
     std::chrono::steady_clock::time_point holdUntil_{};
     std::chrono::steady_clock::time_point lastAmplitudeSample_{};
     std::chrono::milliseconds fadeDuration_{0};
+    std::atomic<int> pendingAmplitude_{0};
+    std::atomic<bool> amplitudeMessagePending_{false};
     float liveAmplitude_ = 0.0f;
     float displayedAmplitude_ = 0.0f;
 };

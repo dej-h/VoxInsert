@@ -4,6 +4,7 @@
 
 #include <atomic>
 #include <condition_variable>
+#include <cstdint>
 #include <functional>
 #include <mutex>
 #include <string>
@@ -44,6 +45,7 @@ private:
     std::wstring workerFailureReason_;
     std::wstring activeDeviceName_;
     std::condition_variable startupCondition_;
+    std::atomic<int64_t> stopRequestedAtTicks_{0};
     bool startupCompleted_ = false;
     bool startupSucceeded_ = false;
     bool portAudioInitialized_ = false;

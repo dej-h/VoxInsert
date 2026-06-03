@@ -4,6 +4,7 @@
 #include <functional>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -27,19 +28,6 @@ struct PcmAudioFormat {
     int sampleRate = 16000;
     int channelCount = 1;
     int bitsPerSample = 16;
-};
-
-// A chunk of captured PCM emitted by the audio producer in capture order.
-struct CapturedAudioChunk {
-    StreamingSessionId sessionId;
-    UtteranceId utteranceId;
-    uint64_t sequence = 0;
-    PcmAudioFormat format;
-    int64_t startOffsetMs = 0;
-    int64_t durationMs = 0;
-    float rms = 0.0f;
-    bool inputOverflowObserved = false;
-    std::vector<int16_t> pcm16;
 };
 
 // The full retained PCM buffer. Source of truth for WAV writing and the
@@ -69,7 +57,8 @@ struct StreamingBackendCommand {
     PcmAudioFormat format;
     int64_t startOffsetMs = 0;
     int64_t durationMs = 0;
-    std::vector<int16_t> pcm16;
+    // Non-owning payload valid only for the synchronous AppendAudio call.
+    std::span<const int16_t> pcm16;
 };
 
 enum class BackendTranscriptEventKind {
@@ -173,7 +162,7 @@ struct StreamingBackendCapabilities {
     bool supportsManualCommit = true;
     bool supportsServerTurnDetection = false;
     int requiredSampleRate = 16000;
-    int preferredAppendBatchMs = 80;
+    int preferredAppendBatchMs = 20;
 };
 
 // A live streaming transcription session owned by the coordinator.

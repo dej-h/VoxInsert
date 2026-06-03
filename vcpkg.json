@@ -1,6 +1,6 @@
 {
   "name": "voxinsert",
-  "version-string": "0.1.1",
+  "version-string": "0.1.2",
   "builtin-baseline": "22d9c655dc24ad24c6cac27607005e619ce46740",
   "dependencies": [
     "portaudio",

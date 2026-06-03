@@ -6,6 +6,7 @@
 #include "insertion/text_injector.h"
 #include "runtime/bounded_queue.h"
 #include "runtime/post_recording_workflow.h"
+#include "runtime/spsc_index_ring.h"
 #include "transcription/streaming_transcription_service.h"
 #include "transcription/transcript_assembler.h"
 #include "transcription/transcription_client.h"
@@ -19,8 +20,10 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <semaphore>
 #include <string>
 #include <thread>
+#include <vector>
 
 namespace spdlog {
 class logger;
@@ -69,9 +72,9 @@ public:
     StreamingRecordingController(const StreamingRecordingController&) = delete;
     StreamingRecordingController& operator=(const StreamingRecordingController&) = delete;
 
-    // Connects the backend session and starts capturing/streaming audio. On
-    // failure nothing is left running so the caller can fall back to the
-    // one-shot recording path.
+    // Starts capture first, then connects the backend session. If capture
+    // starts but backend startup fails, the recording stays active and Finish
+    // falls back to the one-shot transcription path using retained PCM.
     bool Start(const StreamingRecordingRequest& request, std::wstring& failureReason);
 
     // Stops capture, commits the utterance, waits for the final transcript,
@@ -85,11 +88,20 @@ public:
     bool IsActive() const noexcept { return active_.load(); }
 
 private:
+    struct CapturedAudioSlot {
+        std::uint64_t sequence = 0;
+        size_t sampleCount = 0;
+        std::vector<int16_t> pcm16;
+    };
+
     void AudioPumpMain(std::stop_token stopToken) noexcept;
     void EventPumpMain(std::stop_token stopToken) noexcept;
     void OnBackendEvent(BackendTranscriptEvent event);
     void StopWorkers() noexcept;
-    void FlushAppendBatch(std::vector<int16_t>& batch) noexcept;
+    void ResetAudioSlots(size_t sampleCapacity);
+    void MarkStreamingTranscriptUntrusted(const char* reason) noexcept;
+    size_t ReadyAudioSlotCount() const noexcept;
+    void FlushAppendBatch(std::vector<int16_t>& batch, std::uint64_t firstSequence, std::uint64_t lastSequence) noexcept;
 
     StreamingRecordingRequest request_;
     std::unique_ptr<IStreamingTranscriptionBackend> backend_;
@@ -97,7 +109,10 @@ private:
     TranscriptAssembler assembler_;
     std::mutex assemblerMutex_;
 
-    BlockingBoundedQueue<CapturedAudioChunk> audioQueue_;
+    std::vector<CapturedAudioSlot> audioSlots_;
+    SpscIndexRing freeAudioSlots_;
+    SpscIndexRing readyAudioSlots_;
+    std::counting_semaphore<> readyAudioSignal_{0};
     BlockingBoundedQueue<BackendTranscriptEvent> eventQueue_;
 
     std::jthread audioPump_;
@@ -110,13 +125,16 @@ private:
     std::wstring backendFailureReason_;
 
     std::atomic<bool> active_{false};
+    std::atomic<bool> audioForwardingEnabled_{false};
+    std::atomic<bool> audioRingClosed_{true};
     std::atomic<bool> backpressureObserved_{false};
     std::atomic<bool> sessionSendFailed_{false};
     std::atomic<std::uint64_t> nextSequence_{0};
     StreamingSessionId sessionId_;
     UtteranceId utteranceId_;
     PcmAudioFormat captureFormat_;
-    int appendBatchMs_ = 80;
+    size_t audioSlotSampleCapacity_ = 0;
+    int appendBatchMs_ = 20;
 };
 
 } // namespace voxinsert

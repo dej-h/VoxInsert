@@ -47,7 +47,7 @@ struct MistralTranscriptionProviderConfig {
 struct StreamingTranscriptionConfig {
     bool enabled = true;
     std::string provider = "openai_realtime";
-    int appendBatchMs = 80;
+    int appendBatchMs = 20;
     int finalizeTimeoutMs = 8000;
     bool fallbackToFileTranscription = true;
 };

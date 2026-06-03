@@ -5,6 +5,7 @@ Scope: local Windows desktop app latency from keybind/SMTC toggle to microphone 
 ## Findings
 
 - [Blocker] `src/runtime/streaming_recording_controller.cpp:97`, `src/runtime/streaming_recording_controller.cpp:108`, `src/runtime/streaming_recording_controller.cpp:117`, `src/transcription/openai_realtime_streaming_service.cpp:152`, `src/transcription/mistral_realtime_streaming_service.cpp:107` - Recording start does backend/session work before microphone capture starts.
+  - Status 2026-06-03: fixed in `src/runtime/streaming_recording_controller.cpp`; see `documentation/latency-first-blocker-capture-first-results.md` for before/after evidence.
   - Breaks: zero hot-path blocking, bypass cold-path work, deterministic keybind-to-capture latency.
   - Why it matters: the toggle path creates a backend session, reads credentials, initializes WebSocket state, and starts backend machinery before `AudioRecorder::Start` is called. Even though `webSocket_.start()` is asynchronous, credential access and session setup still sit before capture. A slow Credential Manager call or backend setup failure delays the first audio frame.
   - Fix: start/prewarm audio first, or keep a warmed capture/session coordinator alive. Cache validated credential handles/strings outside the keypress path. Connect the streaming backend in parallel with capture and buffer raw PCM in a preallocated ring until the session is ready.
@@ -15,21 +16,25 @@ Scope: local Windows desktop app latency from keybind/SMTC toggle to microphone 
   - Fix: initialize PortAudio and open the default input stream at app startup or when settings change. Prefer a long-lived callback stream that is armed/disarmed by atomics, not a thread and stream creation per recording.
 
 - [Blocker] `src/runtime/bounded_queue.h:29`, `src/runtime/bounded_queue.h:31`, `src/runtime/bounded_queue.h:35`, `src/runtime/bounded_queue.h:55`, `src/runtime/bounded_queue.h:105` - The capture-to-streaming queue is mutex/condition-variable based and backed by `std::queue`.
+  - Status 2026-06-03: fixed for the capture-to-streaming audio path. `src/runtime/streaming_recording_controller.cpp` now uses preallocated audio slots and `src/runtime/spsc_index_ring.h` SPSC index rings; the backend event queue still uses `BlockingBoundedQueue`.
   - Breaks: lock-free algorithms, contiguous memory only, zero hot-path allocation.
   - Why it matters: the audio producer calls `TryPush` from the capture callback path, which takes a mutex and pushes into a default `std::queue`/`std::deque` storage structure. Capacity is logical, not preallocated contiguous storage, so queue growth can allocate and cache locality is poor.
   - Fix: replace it with a fixed-capacity SPSC ring buffer with preallocated slots. Use acquire/release atomics with explicit memory orders and no OS blocking in the producer.
 
 - [Blocker] `src/runtime/streaming_recording_controller.cpp:121`, `src/runtime/streaming_recording_controller.cpp:126`, `src/transcription/streaming_transcription_service.h:33`, `src/transcription/streaming_transcription_service.h:42` - Every captured buffer allocates/copies into an owned `std::vector<int16_t>` chunk.
+  - Status 2026-06-03: fixed. `CapturedAudioChunk` was removed, the capture callback copies into preallocated fixed-size PCM slots, and backend append commands now carry a non-owning `std::span<const int16_t>` for the synchronous append call.
   - Breaks: zero hot-path allocation and data-oriented capture.
   - Why it matters: for the default 16 kHz/256-frame config, this runs roughly every 16 ms. Each callback constructs a chunk containing strings and a vector, assigns PCM into the vector, then enqueues it. This adds allocator jitter and extra copies exactly where the app needs stable capture timing.
   - Fix: preallocate fixed-size audio slots in a ring. Store session/utterance IDs once per session, not per audio chunk. Pass slot indices/spans through the queue.
 
 - [Blocker] `src/runtime/streaming_recording_controller.cpp:127`, `src/runtime/streaming_recording_controller.cpp:128`, `src/runtime/streaming_recording_controller.cpp:218`, `src/runtime/streaming_recording_controller.cpp:219`, `src/runtime/streaming_recording_controller.cpp:303`, `src/runtime/streaming_recording_controller.cpp:347` - Streaming backpressure can drop audio/events without invalidating the streaming transcript.
+  - Status 2026-06-03: fixed. Audio-slot pressure, backend-event drops, append failures, and commit failures mark the streaming transcript untrusted and force retained-PCM fallback.
   - Breaks: correctness, deterministic failure handling, and hot-path reliability.
   - Why it matters: if `audioQueue_` is full, the chunk is dropped and `backpressureObserved_` is set. If `eventQueue_` is full, backend events are dropped. `Finish` only treats `failed_ || !finalized_` as a streaming failure, so a finalized transcript produced from incomplete audio can still be inserted.
   - Fix: make any dropped audio chunk mark the streaming transcript untrusted and force retained-PCM file fallback, or block only outside the audio callback on a larger preallocated ring. Treat dropped final/events as a hard streaming failure.
 
 - [Major] `src/runtime/streaming_recording_controller.cpp:176`, `src/runtime/streaming_recording_controller.cpp:177`, `config.example.json:24` - `append_batch_ms` defaults to 80 ms and is enforced as the streaming send threshold.
+  - Status 2026-06-03: fixed. Defaults and provider preferences are now 20 ms, and the controller clamps the effective append batch to the provider's preferred value with runtime logging.
   - Breaks: minimal audio-captured-to-backend latency.
   - Why it matters: even with a ready WebSocket, audio is intentionally held until the batch reaches 80 ms. That hides some network overhead, but it adds a fixed latency floor before the backend can see early speech.
   - Fix: tune this down, make it provider-specific, and measure. For lowest latency, use 10 to 20 ms frames if the backend accepts them, or adaptive batching during connection warm-up only.
@@ -40,11 +45,13 @@ Scope: local Windows desktop app latency from keybind/SMTC toggle to microphone 
   - Fix: pass an empty amplitude callback when the status pill is disabled, or compute/downsample meter data on a non-capture thread.
 
 - [Major] `src/audio/audio_recorder.cpp:256`, `src/runtime/streaming_recording_controller.cpp:126`, `src/runtime/streaming_recording_controller.cpp:182` - Captured PCM is copied multiple times before it reaches the backend.
+  - Status 2026-06-03: partially reduced. The per-capture owned chunk allocation/copy and backend-command vector move were removed; retained PCM append, batch assembly, provider resampling/base64, and JSON serialization still copy/allocate.
   - Breaks: zero hot-path allocation/copies.
   - Why it matters: each buffer is appended to retained PCM, copied into a streaming chunk, copied again into the append batch, then copied/encoded by the provider adapter. This increases CPU and memory bandwidth pressure during speech.
   - Fix: retain PCM in preallocated slabs and queue references to the same slabs. Batch by span list or ring cursors rather than appending vectors.
 
 - [Major] `src/audio/audio_recorder.cpp:132`, `src/audio/audio_recorder.cpp:279` - Stopping a recording copies the whole retained sample vector.
+  - Status 2026-06-03: fixed. `AudioRecorder::Stop` now moves `samples_` into the caller output instead of copying the whole retained buffer.
   - Breaks: audio-captured-to-ready latency after stop.
   - Why it matters: the worker moves `capturedSamples` into `samples_`, then `Stop` copies `samples_` into the caller output. Longer recordings can copy megabytes on the finalization path.
   - Fix: move out with `samples = std::move(samples_)` after checking failure state, or return a retained audio object that owns the buffer without another copy.
@@ -70,6 +77,7 @@ Scope: local Windows desktop app latency from keybind/SMTC toggle to microphone 
   - Fix: make stop post a finalize request and return immediately to the UI. Enforce smaller provider-specific finalization budgets. If finalization is not already in progress from live partials, fallback quickly.
 
 - [Major] `src/runtime/streaming_recording_controller.cpp:310`, `src/runtime/streaming_recording_controller.cpp:324`, `src/runtime/streaming_recording_controller.cpp:402` - Even after the streaming transcript is assembled, the code writes the WAV before inserting text.
+  - Status 2026-06-03: fixed for trusted streaming transcripts. The streaming-success path now inserts first, then writes the WAV and enqueues archive work. Fallback still writes the WAV before transcription because the file-transcription client needs it.
   - Breaks: fastest final-transcript-to-user-visible result.
   - Why it matters: `transcriptUtf8` is available before WAV persistence, but `WritePcm16Mono` runs before `InsertText`. Disk path creation and writing happen on the finalization worker before the user sees text.
   - Fix: if streaming produced a trusted transcript, insert first and persist WAV/archive afterward on a separate worker. Keep the retained PCM in memory for fallback and archive.
@@ -203,12 +211,12 @@ ROI here means expected user-visible return divided by implementation cost. "Lat
 | 80 ms append batch floor | High | Can reduce captured-audio-to-backend latency by roughly 60-70 ms if reduced to 10-20 ms and accepted by provider. | Small/Medium | Easy to experiment with; benchmark provider behavior before shipping. |
 | RMS computed when status pill disabled | Medium | Saves a per-buffer scan and `sqrt` only when the UI meter is off. | Small | Cheap cleanup, but not a top latency bottleneck if the pill is normally on. |
 | Multiple PCM copies before backend | High | Cuts CPU and memory bandwidth during recording; improves stability under load. | Medium | Fold into slab/ring redesign. |
-| Stop copies retained sample vector | Medium | Saves a whole-recording copy on stop; impact grows with recording length. | Small | Likely quick win: move instead of copy after failure checks. |
+| Stop copies retained sample vector | Medium | Saves a whole-recording copy on stop; impact grows with recording length. | Small | Status 2026-06-03: fixed with move-out on `AudioRecorder::Stop`. |
 | OpenAI resampler allocates per append | Medium/High | Removes per-append allocation for OpenAI realtime. | Small/Medium | Capture at 24 kHz for OpenAI may outperform resampling if device/provider path behaves well. |
 | Base64/JSON allocation per append | Medium | Reduces streaming pump CPU and allocator churn; smaller effect than audio-thread fixes. | Medium | Use reusable buffers or fixed-shape serialization. |
 | Unbounded pre-connect encoded backlog | High | Prevents memory growth and large delayed flushes under slow network. | Medium | More reliability/tail-latency ROI than happy-path speed. |
 | Stop/finalize joins and 8 s timeout | Very high | Can remove the worst stop-to-ready tail. Savings can be seconds on backend stalls. | Medium | Set an interactive budget and fallback early. |
-| WAV write before insertion | High | Lets text appear before disk persistence. Savings depend on recording length and disk state. | Medium | Good user-perceived latency win. |
+| WAV write before insertion | High | Lets text appear before disk persistence. Savings depend on recording length and disk state. | Medium | Status 2026-06-03: fixed on trusted streaming success; fallback still needs pre-transcription WAV. |
 | Fallback writes WAV then rereads it | Medium | Saves disk I/O and a full-file memory read on fallback only. | Medium | Important if streaming fallback happens often. |
 | Long fallback retries/timeouts | High | Bounds pathological stop-to-ready delays from minutes to an intentional interactive budget. | Small/Medium | Product decision: fast fail vs background recovery. |
 | Clipboard restore/retry/sleeps | High | Can save 125-500+ ms after transcript readiness, especially with clipboard contention. | Small/Medium | Low-latency mode should default restore off or use a direct insertion path. |
@@ -236,16 +244,17 @@ ROI here means expected user-visible return divided by implementation cost. "Lat
 ## Additional Gaps Against The Hard Standards
 
 - Kernel bypass is not present and is not realistic for third-party TLS WebSocket transcription. The app uses ixwebsocket and cpr over the normal Windows network stack (`src/transcription/openai_realtime_streaming_service.cpp:193`, `src/transcription/mistral_realtime_streaming_service.cpp:141`, `src/transcription/openai_transcription_service.cpp:186`). For this product, the practical equivalent is to avoid connecting on the keypress path, keep sessions warm where provider policy allows, and aggressively bound fallback latency.
-- Data-oriented design is partial. Raw PCM samples are contiguous, but queued work items are metadata-heavy structs with strings and vectors (`src/transcription/streaming_transcription_service.h:33`, `src/transcription/streaming_transcription_service.h:63`). Queue slots should be fixed-layout and small.
+- Data-oriented design is improved for capture-to-streaming audio: queued work is now slot indices and backend commands use spans. It is still partial because retained PCM, provider resampling/base64/JSON, transcript assembly, and backend events still allocate or use non-flat structures.
 - `constexpr`/compile-time execution is used for constants, but provider dispatch, JSON message building, and configuration-driven branching stay runtime (`src/runtime/streaming_recording_controller.cpp:27`, `src/transcription/openai_realtime_streaming_service.cpp:212`). That is acceptable for product flexibility, but not compliant with the hard standard.
 - Const-by-default is not followed consistently. Many APIs use mutable locals and mutable output references. The practical priority is to fix capture/streaming allocation and blocking first, then tighten constness as part of API cleanup.
 
 ## Highest-Impact Fix Order
 
-1. Make microphone capture prewarmed and started before any backend/credential/network work.
-2. Replace `BlockingBoundedQueue` and per-chunk `std::vector` ownership with a preallocated SPSC audio ring.
-3. Treat any streaming audio/event drop as untrusted streaming output and fallback immediately.
-4. Move insertion before WAV persistence when streaming has a trusted final transcript.
-5. Remove or lower the 80 ms append batch floor after provider-specific measurement.
+1. Make microphone capture prewarmed and started before any backend/credential/network work. Status 2026-06-03: capture now starts before backend/session startup; full PortAudio prewarming remains open.
+2. Replace `BlockingBoundedQueue` and per-chunk `std::vector` ownership with a preallocated SPSC audio ring. Status 2026-06-03: fixed for capture-to-streaming audio.
+3. Treat any streaming audio/event drop as untrusted streaming output and fallback immediately. Status 2026-06-03: fixed.
+4. Move insertion before WAV persistence when streaming has a trusted final transcript. Status 2026-06-03: fixed.
+5. Remove or lower the 80 ms append batch floor after provider-specific measurement. Status 2026-06-03: lowered to provider-capped 20 ms; runtime measurement still needed.
 6. Enforce streaming sample-rate compatibility and construct resamplers from the actual capture format.
-7. Add CI gates: `ctest`, warning-as-error, RTTI/exception policy, and sanitizer/clang-cl coverage.
+7. Move retained audio out on stop instead of copying it. Status 2026-06-03: fixed.
+8. Add CI gates: `ctest`, warning-as-error, RTTI/exception policy, and sanitizer/clang-cl coverage.

@@ -84,9 +84,9 @@ public:
     LinearResampler(int inputRate, int outputRate)
         : inputRate_(inputRate), outputRate_(outputRate) {}
 
-    std::vector<int16_t> Process(const std::vector<int16_t>& input) {
+    std::vector<int16_t> Process(std::span<const int16_t> input) {
         if (inputRate_ == outputRate_) {
-            return input;
+            return std::vector<int16_t>(input.begin(), input.end());
         }
 
         std::vector<int16_t> output;
@@ -211,39 +211,14 @@ public:
         json payload;
         payload["type"] = "input_audio_buffer.append";
         payload["audio"] = base64Audio;
-        std::string serialized = payload.dump();
-
-        {
-            std::scoped_lock lock(stateMutex_);
-            if (connectFailed_) {
-                failureReason = connectFailureReason_.empty()
-                    ? L"The OpenAI realtime connection failed before audio could be sent."
-                    : connectFailureReason_;
-                return false;
-            }
-            if (!opened_) {
-                // The socket is still connecting; retain this chunk in order so
-                // no leading audio is lost. HandleSocketMessage(Open) flushes
-                // these once the session is ready.
-                pendingAudioPayloads_.push_back(std::move(serialized));
-                return true;
-            }
-        }
-
-        const ix::WebSocketSendInfo info = webSocket_.sendText(serialized);
-        if (!info.success) {
-            failureReason = L"Failed to send a message to the OpenAI realtime transcription endpoint.";
-            return false;
-        }
-
-        return true;
+        return QueueOrSendSerialized(payload.dump(), failureReason, "input_audio_buffer.append");
     }
 
     bool CommitUtterance(const UtteranceId& /*utteranceId*/, std::wstring& failureReason) override {
         commitTime_.store(std::chrono::steady_clock::now());
         json payload;
         payload["type"] = "input_audio_buffer.commit";
-        return SendJson(payload, failureReason);
+        return SendJson(payload, failureReason, "input_audio_buffer.commit");
     }
 
     void CancelUtterance(const UtteranceId& /*utteranceId*/) noexcept override {
@@ -251,7 +226,7 @@ public:
             json payload;
             payload["type"] = "input_audio_buffer.clear";
             std::wstring ignored;
-            SendJson(payload, ignored);
+            SendJson(payload, ignored, "input_audio_buffer.clear");
         }
         catch (...) {
         }
@@ -270,7 +245,8 @@ public:
     }
 
 private:
-    void EmitEvent(BackendTranscriptEventKind kind, const std::string& itemId, std::string textUtf8, std::wstring failure) {        if (!onEvent_) {
+    void EmitEvent(BackendTranscriptEventKind kind, const std::string& itemId, std::string textUtf8, std::wstring failure) {
+        if (!onEvent_) {
             return;
         }
 
@@ -284,14 +260,66 @@ private:
         onEvent_(std::move(event));
     }
 
-    bool SendJson(const json& payload, std::wstring& failureReason) {
-        const std::string serialized = payload.dump();
+    void FailSession(std::wstring reason, std::string_view context) {
+        if (reason.empty()) {
+            reason = L"The OpenAI realtime transcription session failed.";
+        }
+
+        bool shouldEmit = false;
+        {
+            const std::scoped_lock lock(stateMutex_);
+            if (!connectFailed_) {
+                connectFailed_ = true;
+                connectFailureReason_ = reason;
+                shouldEmit = true;
+            }
+            else if (connectFailureReason_.empty()) {
+                connectFailureReason_ = reason;
+            }
+        }
+
+        if (!shouldEmit) {
+            return;
+        }
+
+        if (logger_ != nullptr) {
+            logger_->warn("openai realtime: {}: {}", context, Utf8FromWide(reason));
+        }
+        stateCondition_.notify_all();
+        EmitEvent(BackendTranscriptEventKind::Failed, {}, {}, std::move(reason));
+    }
+
+    bool SendSerializedNow(const std::string& serialized, std::wstring& failureReason, std::string_view phase) {
+        const std::scoped_lock sendLock(sendMutex_);
         const ix::WebSocketSendInfo info = webSocket_.sendText(serialized);
         if (!info.success) {
             failureReason = L"Failed to send a message to the OpenAI realtime transcription endpoint.";
+            FailSession(failureReason, phase);
             return false;
         }
         return true;
+    }
+
+    bool QueueOrSendSerialized(std::string serialized, std::wstring& failureReason, std::string_view phase) {
+        {
+            std::scoped_lock lock(stateMutex_);
+            if (connectFailed_) {
+                failureReason = connectFailureReason_.empty()
+                    ? L"The OpenAI realtime connection failed before audio could be sent."
+                    : connectFailureReason_;
+                return false;
+            }
+            if (!opened_) {
+                pendingOutboundPayloads_.push_back(std::move(serialized));
+                return true;
+            }
+        }
+
+        return SendSerializedNow(serialized, failureReason, phase);
+    }
+
+    bool SendJson(const json& payload, std::wstring& failureReason, std::string_view phase) {
+        return QueueOrSendSerialized(payload.dump(), failureReason, phase);
     }
 
     // Milliseconds between the most recent commit and now; used to report how
@@ -307,7 +335,7 @@ private:
             .count();
     }
 
-    void SendSessionConfiguration() {
+    std::string BuildSessionConfigurationPayload() const {
         // GA Realtime transcription session shape (see OpenAI realtime
         // transcription guide and the openai-agents-python STT client):
         //   { type: session.update,
@@ -343,38 +371,83 @@ private:
         payload["type"] = "session.update";
         payload["session"] = session;
 
-        std::wstring ignored;
-        if (!SendJson(payload, ignored) && logger_ != nullptr) {
-            logger_->warn("openai realtime: failed to send session.update");
+        return payload.dump();
+    }
+
+    void CompleteStartupHandshake() {
+        size_t queuedAtOpen = 0;
+        {
+            const std::scoped_lock lock(stateMutex_);
+            queuedAtOpen = pendingOutboundPayloads_.size();
         }
+
+        if (logger_ != nullptr) {
+            const auto openMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                    std::chrono::steady_clock::now() - connectStartedAt_)
+                                    .count();
+            logger_->debug(
+                "openai realtime: websocket transport open in {}ms ({} queued message(s)); sending session.update",
+                openMs,
+                queuedAtOpen);
+        }
+
+        std::wstring failureReason;
+        if (!SendSerializedNow(BuildSessionConfigurationPayload(), failureReason, "session.update")) {
+            return;
+        }
+
+        size_t flushedCount = 0;
+        while (true) {
+            std::vector<std::string> pending;
+            {
+                const std::scoped_lock lock(stateMutex_);
+                pending.swap(pendingOutboundPayloads_);
+                if (pending.empty()) {
+                    opened_ = true;
+                    break;
+                }
+            }
+
+            for (const std::string& serialized : pending) {
+                if (!SendSerializedNow(serialized, failureReason, "startup_flush")) {
+                    return;
+                }
+                ++flushedCount;
+            }
+        }
+
+        if (logger_ != nullptr) {
+            const auto readyMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                     std::chrono::steady_clock::now() - connectStartedAt_)
+                                     .count();
+            logger_->debug(
+                "openai realtime: session ready in {}ms ({} queued message(s) flushed)",
+                readyMs,
+                flushedCount);
+        }
+
+        stateCondition_.notify_all();
+        EmitEvent(BackendTranscriptEventKind::SessionReady, {}, {}, {});
+    }
+
+    std::wstring BuildCloseReason(const ix::WebSocketCloseInfo& closeInfo) const {
+        std::wstring reason = L"OpenAI realtime websocket closed";
+        if (closeInfo.code != 0) {
+            reason += L" (code ";
+            reason += std::to_wstring(closeInfo.code);
+            reason += L")";
+        }
+        if (!closeInfo.reason.empty()) {
+            reason += L": ";
+            reason += WideFromUtf8(closeInfo.reason);
+        }
+        return reason;
     }
 
     void HandleSocketMessage(const ix::WebSocketMessagePtr& message) {
         switch (message->type) {
         case ix::WebSocketMessageType::Open: {
-            SendSessionConfiguration();
-            std::vector<std::string> pending;
-            {
-                const std::scoped_lock lock(stateMutex_);
-                opened_ = true;
-                pending.swap(pendingAudioPayloads_);
-            }
-            // Flush any audio captured while the socket was still connecting,
-            // in capture order and after session.update.
-            for (const std::string& serialized : pending) {
-                webSocket_.sendText(serialized);
-            }
-            if (logger_ != nullptr) {
-                const auto connectMs = std::chrono::duration_cast<std::chrono::milliseconds>(
-                                           std::chrono::steady_clock::now() - connectStartedAt_)
-                                           .count();
-                logger_->debug(
-                    "openai realtime: websocket connected in {}ms ({} buffered append(s) flushed)",
-                    connectMs,
-                    pending.size());
-            }
-            stateCondition_.notify_all();
-            EmitEvent(BackendTranscriptEventKind::SessionReady, {}, {}, {});
+            CompleteStartupHandshake();
             break;
         }
         case ix::WebSocketMessageType::Message:
@@ -382,20 +455,44 @@ private:
             break;
         case ix::WebSocketMessageType::Error: {
             const std::wstring reason = WideFromUtf8(message->errorInfo.reason);
-            {
-                const std::scoped_lock lock(stateMutex_);
-                if (!opened_) {
-                    connectFailed_ = true;
-                    connectFailureReason_ = reason;
-                }
-            }
-            stateCondition_.notify_all();
-            EmitEvent(BackendTranscriptEventKind::Failed, {}, {}, reason);
+            FailSession(reason, "websocket error");
             break;
         }
-        case ix::WebSocketMessageType::Close:
-            EmitEvent(BackendTranscriptEventKind::SessionClosed, {}, {}, {});
+        case ix::WebSocketMessageType::Close: {
+            const bool localShutdown = closed_.load();
+            const std::wstring reason = BuildCloseReason(message->closeInfo);
+            if (logger_ != nullptr) {
+                const std::string closeReason = message->closeInfo.reason.empty()
+                    ? std::string{"<none>"}
+                    : message->closeInfo.reason;
+                if (localShutdown) {
+                    logger_->debug(
+                        "openai realtime: websocket closed (code={}, remote={}, reason={})",
+                        message->closeInfo.code,
+                        message->closeInfo.remote,
+                        closeReason);
+                }
+                else {
+                    logger_->warn(
+                        "openai realtime: websocket closed (code={}, remote={}, reason={})",
+                        message->closeInfo.code,
+                        message->closeInfo.remote,
+                        closeReason);
+                }
+            }
+            if (!localShutdown) {
+                {
+                    const std::scoped_lock lock(stateMutex_);
+                    if (!connectFailed_) {
+                        connectFailed_ = true;
+                        connectFailureReason_ = reason;
+                    }
+                }
+                stateCondition_.notify_all();
+            }
+            EmitEvent(BackendTranscriptEventKind::SessionClosed, {}, {}, localShutdown ? std::wstring{} : reason);
             break;
+        }
         default:
             break;
         }
@@ -465,6 +562,7 @@ private:
 
     ix::WebSocket webSocket_;
     std::mutex stateMutex_;
+    std::mutex sendMutex_;
     std::condition_variable stateCondition_;
     bool opened_ = false;
     bool connectFailed_ = false;
@@ -474,10 +572,11 @@ private:
     // Set when the socket starts connecting; used to report how long the
     // asynchronous connection took once Open arrives.
     std::chrono::steady_clock::time_point connectStartedAt_{};
-    // Audio appended before the socket opened, retained in capture order and
-    // flushed by the Open handler so no leading speech is dropped. Guarded by
-    // stateMutex_.
-    std::vector<std::string> pendingAudioPayloads_;
+    // Messages queued before the realtime session is fully ready. This keeps
+    // startup audio, stop/commit, and any late-arriving chunks in one ordered
+    // stream so the callback thread can flush them serially after session.update.
+    // Guarded by stateMutex_.
+    std::vector<std::string> pendingOutboundPayloads_;
 
     // Diagnostics for the delta/diff path: how many incremental transcription
     // deltas the server streamed and how long after commit the first arrived.
@@ -496,7 +595,7 @@ StreamingBackendCapabilities OpenAiRealtimeStreamingBackend::Capabilities(const 
     capabilities.supportsManualCommit = true;
     capabilities.supportsServerTurnDetection = false;
     capabilities.requiredSampleRate = kRealtimeSampleRate;
-    capabilities.preferredAppendBatchMs = 80;
+    capabilities.preferredAppendBatchMs = 20;
     return capabilities;
 }
 

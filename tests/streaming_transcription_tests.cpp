@@ -12,6 +12,7 @@
 
 #include "config/app_config.h"
 #include "runtime/bounded_queue.h"
+#include "runtime/spsc_index_ring.h"
 #include "transcription/fake_streaming_transcription_service.h"
 #include "transcription/streaming_transcription_service.h"
 #include "transcription/transcript_assembler.h"
@@ -54,6 +55,7 @@ using voxinsert::BlockingBoundedQueue;
 using voxinsert::FakeStreamingBackend;
 using voxinsert::FakeStreamingScript;
 using voxinsert::LongestCommonPrefixUtf8;
+using voxinsert::SpscIndexRing;
 using voxinsert::StreamingBackendCommand;
 using voxinsert::StreamingBackendCommandKind;
 using voxinsert::TranscriptAssembler;
@@ -237,6 +239,77 @@ void TestQueueResetReopensForReuse() {
     CHECK_EQ(popped, 11);
 }
 
+void TestSpscIndexRingBasicFifoAndCapacity() {
+    SpscIndexRing ring(2);
+
+    CHECK_EQ(ring.Capacity(), static_cast<size_t>(2));
+    CHECK(ring.TryPush(10));
+    CHECK(ring.TryPush(11));
+    CHECK(!ring.TryPush(12));
+    CHECK_EQ(ring.Size(), static_cast<size_t>(2));
+
+    size_t value = 0;
+    CHECK(ring.TryPop(value));
+    CHECK_EQ(value, static_cast<size_t>(10));
+    CHECK(ring.TryPop(value));
+    CHECK_EQ(value, static_cast<size_t>(11));
+    CHECK(!ring.TryPop(value));
+}
+
+void TestSpscIndexRingResetAndReuse() {
+    SpscIndexRing ring(3);
+    CHECK(ring.TryPush(1));
+    CHECK(ring.TryPush(2));
+    ring.Reset();
+
+    CHECK_EQ(ring.Size(), static_cast<size_t>(0));
+    CHECK(ring.TryPush(20));
+    CHECK(ring.TryPush(21));
+
+    size_t value = 0;
+    CHECK(ring.TryPop(value));
+    CHECK_EQ(value, static_cast<size_t>(20));
+    CHECK(ring.TryPop(value));
+    CHECK_EQ(value, static_cast<size_t>(21));
+}
+
+void TestSpscIndexRingCrossThreadOrdering() {
+    SpscIndexRing ring(8);
+    std::atomic<bool> producerDone{false};
+    std::vector<size_t> received;
+
+    std::thread consumer([&] {
+        while (!producerDone.load() || ring.Size() != 0) {
+            size_t value = 0;
+            if (ring.TryPop(value)) {
+                received.push_back(value);
+            }
+            else {
+                std::this_thread::yield();
+            }
+        }
+    });
+
+    constexpr size_t kCount = 500;
+    for (size_t index = 0; index < kCount; ++index) {
+        while (!ring.TryPush(index)) {
+            std::this_thread::yield();
+        }
+    }
+    producerDone.store(true);
+    consumer.join();
+
+    CHECK_EQ(received.size(), kCount);
+    bool ordered = true;
+    for (size_t index = 0; index < kCount && index < received.size(); ++index) {
+        if (received[index] != index) {
+            ordered = false;
+            break;
+        }
+    }
+    CHECK(ordered);
+}
+
 void TestLongestCommonPrefixUtf8() {
     CHECK_EQ(LongestCommonPrefixUtf8("hello", "help"), static_cast<size_t>(3));
     CHECK_EQ(LongestCommonPrefixUtf8("", "abc"), static_cast<size_t>(0));
@@ -405,7 +478,8 @@ std::string RunFakePipeline(
         command.utteranceId = utterance;
         command.firstSequence = static_cast<uint64_t>(i);
         command.lastSequence = static_cast<uint64_t>(i);
-        command.pcm16.assign(256, static_cast<int16_t>(i));
+        std::vector<int16_t> pcm16(256, static_cast<int16_t>(i));
+        command.pcm16 = pcm16;
         std::wstring appendFailure;
         if (!session->AppendAudio(command, appendFailure)) {
             failureReason = appendFailure;
@@ -503,6 +577,9 @@ int main() {
     TestQueueStopTokenWakesWaiter();
     TestQueueCrossThreadOrdering();
     TestQueueResetReopensForReuse();
+    TestSpscIndexRingBasicFifoAndCapacity();
+    TestSpscIndexRingResetAndReuse();
+    TestSpscIndexRingCrossThreadOrdering();
 
     TestLongestCommonPrefixUtf8();
 

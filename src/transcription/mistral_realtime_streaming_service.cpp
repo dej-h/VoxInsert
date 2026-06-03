@@ -160,29 +160,7 @@ public:
             json payload;
             payload["type"] = "input_audio.append";
             payload["audio"] = base64Audio;
-            std::string serialized = payload.dump();
-
-            {
-                std::scoped_lock lock(stateMutex_);
-                if (connectFailed_) {
-                    failureReason = connectFailureReason_.empty()
-                        ? L"The Mistral realtime connection failed before audio could be sent."
-                        : connectFailureReason_;
-                    return false;
-                }
-                if (!ready_) {
-                    // The session has not negotiated audio_format yet; retain
-                    // this chunk in order so no leading audio is lost.
-                    // OnSessionReady() flushes these once session.created
-                    // arrives.
-                    pendingAudioPayloads_.push_back(std::move(serialized));
-                    continue;
-                }
-            }
-
-            const ix::WebSocketSendInfo info = webSocket_.sendText(serialized);
-            if (!info.success) {
-                failureReason = L"Failed to send a message to the Mistral realtime transcription endpoint.";
+            if (!QueueOrSendSerialized(payload.dump(), failureReason, "input_audio.append")) {
                 return false;
             }
         }
@@ -198,13 +176,13 @@ public:
 
         json flush;
         flush["type"] = "input_audio.flush";
-        if (!SendJson(flush, failureReason)) {
+        if (!SendJson(flush, failureReason, "input_audio.flush")) {
             return false;
         }
 
         json end;
         end["type"] = "input_audio.end";
-        return SendJson(end, failureReason);
+        return SendJson(end, failureReason, "input_audio.end");
     }
 
     void CancelUtterance(const UtteranceId& /*utteranceId*/) noexcept override {
@@ -241,14 +219,66 @@ private:
         onEvent_(std::move(event));
     }
 
-    bool SendJson(const json& payload, std::wstring& failureReason) {
-        const std::string serialized = payload.dump();
+    void FailSession(std::wstring reason, std::string_view context) {
+        if (reason.empty()) {
+            reason = L"The Mistral realtime transcription session failed.";
+        }
+
+        bool shouldEmit = false;
+        {
+            const std::scoped_lock lock(stateMutex_);
+            if (!connectFailed_) {
+                connectFailed_ = true;
+                connectFailureReason_ = reason;
+                shouldEmit = true;
+            }
+            else if (connectFailureReason_.empty()) {
+                connectFailureReason_ = reason;
+            }
+        }
+
+        if (!shouldEmit) {
+            return;
+        }
+
+        if (logger_ != nullptr) {
+            logger_->warn("mistral realtime: {}: {}", context, Utf8FromWide(reason));
+        }
+        stateCondition_.notify_all();
+        EmitEvent(BackendTranscriptEventKind::Failed, {}, {}, std::move(reason));
+    }
+
+    bool SendSerializedNow(const std::string& serialized, std::wstring& failureReason, std::string_view phase) {
+        const std::scoped_lock sendLock(sendMutex_);
         const ix::WebSocketSendInfo info = webSocket_.sendText(serialized);
         if (!info.success) {
             failureReason = L"Failed to send a message to the Mistral realtime transcription endpoint.";
+            FailSession(failureReason, phase);
             return false;
         }
         return true;
+    }
+
+    bool QueueOrSendSerialized(std::string serialized, std::wstring& failureReason, std::string_view phase) {
+        {
+            std::scoped_lock lock(stateMutex_);
+            if (connectFailed_) {
+                failureReason = connectFailureReason_.empty()
+                    ? L"The Mistral realtime connection failed before audio could be sent."
+                    : connectFailureReason_;
+                return false;
+            }
+            if (!ready_) {
+                pendingOutboundPayloads_.push_back(std::move(serialized));
+                return true;
+            }
+        }
+
+        return SendSerializedNow(serialized, failureReason, phase);
+    }
+
+    bool SendJson(const json& payload, std::wstring& failureReason, std::string_view phase) {
+        return QueueOrSendSerialized(payload.dump(), failureReason, phase);
     }
 
     // Milliseconds between the most recent commit and now; used to report how
@@ -264,7 +294,7 @@ private:
             .count();
     }
 
-    void SendSessionConfiguration() {
+    std::string BuildSessionConfigurationPayload() const {
         // Mistral realtime session shape (see mistralai/client-python realtime
         // connection): the audio_format must be declared before any audio is
         // sent. The model is supplied via the URL query parameter, not here.
@@ -279,38 +309,77 @@ private:
         payload["type"] = "session.update";
         payload["session"] = session;
 
-        std::wstring ignored;
-        if (!SendJson(payload, ignored) && logger_ != nullptr) {
-            logger_->warn("mistral realtime: failed to send session.update");
-        }
+        return payload.dump();
     }
 
-    void OnSessionReady() {
-        // session.created has arrived: declare the audio_format, then flush any
-        // audio captured while the socket was still connecting, in capture
-        // order and after session.update so Mistral accepts the format.
-        SendSessionConfiguration();
-
-        std::vector<std::string> pending;
+    void CompleteSessionReadyHandshake() {
+        size_t queuedBeforeReady = 0;
         {
             const std::scoped_lock lock(stateMutex_);
-            ready_ = true;
-            pending.swap(pendingAudioPayloads_);
+            queuedBeforeReady = pendingOutboundPayloads_.size();
         }
-        for (const std::string& serialized : pending) {
-            webSocket_.sendText(serialized);
-        }
+
         if (logger_ != nullptr) {
-            const auto connectMs = std::chrono::duration_cast<std::chrono::milliseconds>(
-                                       std::chrono::steady_clock::now() - connectStartedAt_)
-                                       .count();
+            const auto handshakeMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                         std::chrono::steady_clock::now() - connectStartedAt_)
+                                         .count();
             logger_->debug(
-                "mistral realtime: session ready in {}ms ({} buffered append(s) flushed)",
-                connectMs,
-                pending.size());
+                "mistral realtime: session.created received in {}ms ({} queued message(s)); sending session.update",
+                handshakeMs,
+                queuedBeforeReady);
         }
+
+        std::wstring failureReason;
+        if (!SendSerializedNow(BuildSessionConfigurationPayload(), failureReason, "session.update")) {
+            return;
+        }
+
+        size_t flushedCount = 0;
+        while (true) {
+            std::vector<std::string> pending;
+            {
+                const std::scoped_lock lock(stateMutex_);
+                pending.swap(pendingOutboundPayloads_);
+                if (pending.empty()) {
+                    ready_ = true;
+                    break;
+                }
+            }
+
+            for (const std::string& serialized : pending) {
+                if (!SendSerializedNow(serialized, failureReason, "startup_flush")) {
+                    return;
+                }
+                ++flushedCount;
+            }
+        }
+
+        if (logger_ != nullptr) {
+            const auto readyMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                     std::chrono::steady_clock::now() - connectStartedAt_)
+                                     .count();
+            logger_->debug(
+                "mistral realtime: session ready in {}ms ({} queued message(s) flushed)",
+                readyMs,
+                flushedCount);
+        }
+
         stateCondition_.notify_all();
         EmitEvent(BackendTranscriptEventKind::SessionReady, {}, {}, {});
+    }
+
+    std::wstring BuildCloseReason(const ix::WebSocketCloseInfo& closeInfo) const {
+        std::wstring reason = L"Mistral realtime websocket closed";
+        if (closeInfo.code != 0) {
+            reason += L" (code ";
+            reason += std::to_wstring(closeInfo.code);
+            reason += L")";
+        }
+        if (!closeInfo.reason.empty()) {
+            reason += L": ";
+            reason += WideFromUtf8(closeInfo.reason);
+        }
+        return reason;
     }
 
     void HandleSocketMessage(const ix::WebSocketMessagePtr& message) {
@@ -319,25 +388,58 @@ private:
             // The application-level handshake (session.created) is what gates
             // audio; nothing to do on the raw WebSocket open beyond keeping
             // buffering. connectStartedAt_ was captured in Start().
+            if (logger_ != nullptr) {
+                const auto openMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                        std::chrono::steady_clock::now() - connectStartedAt_)
+                                        .count();
+                logger_->debug(
+                    "mistral realtime: websocket transport open in {}ms; waiting for session.created",
+                    openMs);
+            }
             break;
         case ix::WebSocketMessageType::Message:
             HandleTextMessage(message->str);
             break;
         case ix::WebSocketMessageType::Error: {
             const std::wstring reason = WideFromUtf8(message->errorInfo.reason);
-            {
-                const std::scoped_lock lock(stateMutex_);
-                if (!ready_) {
-                    connectFailed_ = true;
-                    connectFailureReason_ = reason;
-                }
-            }
-            stateCondition_.notify_all();
-            EmitEvent(BackendTranscriptEventKind::Failed, {}, {}, reason);
+            FailSession(reason, "websocket error");
             break;
         }
-        case ix::WebSocketMessageType::Close:
-            EmitEvent(BackendTranscriptEventKind::SessionClosed, {}, {}, {});
+        case ix::WebSocketMessageType::Close: {
+            const bool localShutdown = closed_.load();
+            const std::wstring reason = BuildCloseReason(message->closeInfo);
+            if (logger_ != nullptr) {
+                const std::string closeReason = message->closeInfo.reason.empty()
+                    ? std::string{"<none>"}
+                    : message->closeInfo.reason;
+                if (localShutdown) {
+                    logger_->debug(
+                        "mistral realtime: websocket closed (code={}, remote={}, reason={})",
+                        message->closeInfo.code,
+                        message->closeInfo.remote,
+                        closeReason);
+                }
+                else {
+                    logger_->warn(
+                        "mistral realtime: websocket closed (code={}, remote={}, reason={})",
+                        message->closeInfo.code,
+                        message->closeInfo.remote,
+                        closeReason);
+                }
+            }
+            if (!localShutdown) {
+                {
+                    const std::scoped_lock lock(stateMutex_);
+                    if (!connectFailed_) {
+                        connectFailed_ = true;
+                        connectFailureReason_ = reason;
+                    }
+                }
+                stateCondition_.notify_all();
+            }
+            EmitEvent(BackendTranscriptEventKind::SessionClosed, {}, {}, localShutdown ? std::wstring{} : reason);
+            break;
+        }
             break;
         default:
             break;
@@ -359,7 +461,7 @@ private:
         const std::string type = parsed.value("type", std::string{});
 
         if (type == "session.created") {
-            OnSessionReady();
+            CompleteSessionReadyHandshake();
         }
         else if (type == "transcription.text.delta") {
             const std::string delta = parsed.value("text", std::string{});
@@ -414,6 +516,7 @@ private:
 
     ix::WebSocket webSocket_;
     std::mutex stateMutex_;
+    std::mutex sendMutex_;
     std::condition_variable stateCondition_;
     bool ready_ = false;
     bool connectFailed_ = false;
@@ -423,10 +526,11 @@ private:
     // Set when the socket starts connecting; used to report how long the
     // asynchronous session negotiation took once session.created arrives.
     std::chrono::steady_clock::time_point connectStartedAt_{};
-    // Audio appended before the session was ready, retained in capture order and
-    // flushed by OnSessionReady() so no leading speech is dropped. Guarded by
-    // stateMutex_.
-    std::vector<std::string> pendingAudioPayloads_;
+    // Messages queued before the realtime session is fully ready. This keeps
+    // startup audio, stop/flush/end, and any late-arriving chunks in one
+    // ordered stream so the callback thread can flush them serially after
+    // session.update. Guarded by stateMutex_.
+    std::vector<std::string> pendingOutboundPayloads_;
 
     // Diagnostics for the delta path: how many incremental transcription deltas
     // the server streamed and how long after commit the first arrived.
@@ -445,7 +549,7 @@ StreamingBackendCapabilities MistralRealtimeStreamingBackend::Capabilities(const
     capabilities.supportsManualCommit = true;
     capabilities.supportsServerTurnDetection = false;
     capabilities.requiredSampleRate = kRealtimeSampleRate;
-    capabilities.preferredAppendBatchMs = 80;
+    capabilities.preferredAppendBatchMs = 20;
     return capabilities;
 }
 
