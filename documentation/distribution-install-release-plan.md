@@ -84,7 +84,7 @@ The script builds the release executable, stages the required runtime files, run
 To package a specific version:
 
 ```powershell
-.\scripts\package-release.ps1 -Version v0.1.1
+.\scripts\package-release.ps1 -Version v0.1.2
 ```
 
 ## GitHub Actions
@@ -102,7 +102,7 @@ The current release trigger is explicit:
 
 - update the repo version fields to the intended release version
 - merge that change to `main`
-- push a tag like `v0.1.1`
+- push a tag like `v0.1.2`
 
 Important distinction:
 
@@ -115,7 +115,7 @@ The current explicit version anchors are:
 - `vcpkg.json` `version-string`
 - `src/VoxInsert.manifest` assembly version
 
-If those files say `0.1.1` and the maintainer later pushes `v0.1.1`, the package name, release workflow, and app metadata stay aligned.
+If those files say `0.1.2` and the maintainer later pushes `v0.1.2`, the package name, release workflow, and app metadata stay aligned.
 
 ## Future Automation Options
 
