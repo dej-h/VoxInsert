@@ -9,6 +9,7 @@
 #include "input/hotkey_manager.h"
 #include "input/smtc_controller.h"
 #include "insertion/text_injector.h"
+#include "runtime/streaming_recording_controller.h"
 #include "testing/app_host_smoke_test.h"
 #include "transcription/transcription_client.h"
 #include "ui/status_pill.h"
@@ -83,6 +84,7 @@ struct AppContext {
     ArchiveService archiveService;
     StatusPill statusPill;
     WavWriter wavWriter;
+    std::unique_ptr<StreamingRecordingController> streamingController;
     std::thread postRecordingWorker;
     std::mutex postRecordingResultMutex;
     std::mutex recentResultMutex;

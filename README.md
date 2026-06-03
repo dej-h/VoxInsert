@@ -197,6 +197,17 @@ Inspect recent logs with:
 Get-Content "$env:LOCALAPPDATA\VoxInsert\logs\voxinsert.log" -Tail 40
 ```
 
+Override the runtime log level for one launch with:
+
+```powershell
+$env:VOXINSERT_LOG_LEVEL = 'debug'
+& .\out\build\windows-msvc-release\VoxInsert.exe
+```
+
+Supported values are `trace`, `debug`, `info`, `warn`, `error`, `critical`, and `off`.
+
+By default, debug builds use `debug` and release builds use `info`.
+
 If the build fails with `LNK1168: cannot open VoxInsert.exe for writing`, close the running app from the tray or stop it:
 
 ```powershell

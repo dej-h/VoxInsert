@@ -10,14 +10,17 @@ struct SettingsDialogValues {
     HotkeyBinding toggleRecordingHotkey;
     HotkeyBinding cancelRecordingHotkey;
     std::wstring transcriptionProvider;
+    bool streamingEnabled = true;
     std::wstring languageHint;
     std::wstring openAiModel;
+    std::wstring openAiStreamingModel;
     std::wstring openAiCredentialTarget;
     std::wstring openAiPrompt;
     std::wstring openAiCredentialStatus;
     std::wstring openAiApiKey;
     bool removeOpenAiApiKey = false;
     std::wstring mistralModel;
+    std::wstring mistralStreamingModel;
     std::wstring mistralCredentialTarget;
     std::wstring mistralContextBias;
     std::wstring mistralCredentialStatus;

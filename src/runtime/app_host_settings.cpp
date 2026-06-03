@@ -177,8 +177,10 @@ SettingsDialogValues BuildSettingsDialogValues(const AppContext& context) {
     values.toggleRecordingHotkey = context.config.toggleRecordingHotkey;
     values.cancelRecordingHotkey = context.config.cancelRecordingHotkey;
     values.transcriptionProvider = WideFromUtf8(context.config.transcription.provider);
+    values.streamingEnabled = context.config.transcription.streaming.enabled;
     values.languageHint = WideFromUtf8(context.config.transcription.languageHint);
     values.openAiModel = WideFromUtf8(context.config.transcription.openAi.model);
+    values.openAiStreamingModel = WideFromUtf8(context.config.transcription.openAi.streamingModel);
     values.openAiCredentialTarget = WideFromUtf8(context.config.transcription.openAi.credentialTarget);
     values.openAiPrompt = WideFromUtf8(context.config.transcription.openAi.prompt);
     values.openAiCredentialStatus = CredentialStatusText(
@@ -186,6 +188,7 @@ SettingsDialogValues BuildSettingsDialogValues(const AppContext& context) {
         WideFromUtf8(context.config.transcription.openAi.credentialTarget),
         context.logger);
     values.mistralModel = WideFromUtf8(context.config.transcription.mistral.model);
+    values.mistralStreamingModel = WideFromUtf8(context.config.transcription.mistral.streamingModel);
     values.mistralCredentialTarget = WideFromUtf8(context.config.transcription.mistral.credentialTarget);
     values.mistralContextBias = WideFromUtf8(context.config.transcription.mistral.contextBias);
     values.mistralCredentialStatus = CredentialStatusText(
@@ -208,13 +211,21 @@ AppConfig BuildConfigFromSettings(const AppConfig& currentConfig, const Settings
     nextConfig.toggleRecordingHotkey = values.toggleRecordingHotkey;
     nextConfig.cancelRecordingHotkey = values.cancelRecordingHotkey;
     nextConfig.transcription.provider = Utf8FromWide(values.transcriptionProvider);
+    nextConfig.transcription.streaming.enabled = values.streamingEnabled;
     nextConfig.transcription.languageHint = Utf8FromWide(values.languageHint);
     nextConfig.transcription.openAi.model = Utf8FromWide(values.openAiModel);
+    nextConfig.transcription.openAi.streamingModel = Utf8FromWide(values.openAiStreamingModel);
     nextConfig.transcription.openAi.credentialTarget = Utf8FromWide(values.openAiCredentialTarget);
     nextConfig.transcription.openAi.prompt = Utf8FromWide(values.openAiPrompt);
     nextConfig.transcription.mistral.model = Utf8FromWide(values.mistralModel);
+    nextConfig.transcription.mistral.streamingModel = Utf8FromWide(values.mistralStreamingModel);
     nextConfig.transcription.mistral.credentialTarget = Utf8FromWide(values.mistralCredentialTarget);
     nextConfig.transcription.mistral.contextBias = NormalizeMistralContextBias(Utf8FromWide(values.mistralContextBias));
+    // The realtime streaming backend follows the selected transcription
+    // provider so a single provider choice drives both the file and streaming
+    // paths and the fallback stays vendor-consistent.
+    nextConfig.transcription.streaming.provider =
+        (nextConfig.transcription.provider == "mistral") ? "mistral_realtime" : "openai_realtime";
     nextConfig.ui.showStatusPill = values.showStatusPill;
     nextConfig.ui.statusPillPlacement = values.statusPillPlacement;
     nextConfig.system.autoStartWithWindows = values.autoStartWithWindows;

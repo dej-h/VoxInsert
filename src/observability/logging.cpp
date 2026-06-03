@@ -9,6 +9,7 @@
 #include <spdlog/sinks/rotating_file_sink.h>
 #include <spdlog/spdlog.h>
 
+#include <cwctype>
 #include <cwchar>
 #include <vector>
 
@@ -17,6 +18,107 @@ namespace {
 
 constexpr size_t kLogFileMaxSizeBytes = 1024 * 1024;
 constexpr size_t kLogFileMaxCount = 3;
+constexpr wchar_t kLogLevelEnvironmentVariable[] = L"VOXINSERT_LOG_LEVEL";
+
+std::wstring_view TrimWhitespace(std::wstring_view value) noexcept {
+    while (!value.empty() && std::iswspace(static_cast<wint_t>(value.front())) != 0) {
+        value.remove_prefix(1);
+    }
+
+    while (!value.empty() && std::iswspace(static_cast<wint_t>(value.back())) != 0) {
+        value.remove_suffix(1);
+    }
+
+    return value;
+}
+
+bool TryGetEnvironmentVariableValue(const wchar_t* variableName, std::wstring& value) {
+    const DWORD requiredCharacters = GetEnvironmentVariableW(variableName, nullptr, 0);
+    if (requiredCharacters == 0) {
+        return false;
+    }
+
+    std::wstring buffer(static_cast<size_t>(requiredCharacters), L'\0');
+    const DWORD writtenCharacters = GetEnvironmentVariableW(variableName, buffer.data(), requiredCharacters);
+    if (writtenCharacters == 0 || writtenCharacters >= requiredCharacters) {
+        return false;
+    }
+
+    buffer.resize(writtenCharacters);
+    value = std::move(buffer);
+    return true;
+}
+
+bool TryParseLogLevelOverride(std::wstring_view rawValue, spdlog::level::level_enum& level) noexcept {
+    const std::wstring_view trimmedValue = TrimWhitespace(rawValue);
+    if (trimmedValue.empty()) {
+        return false;
+    }
+
+    std::wstring normalizedValue(trimmedValue);
+    for (wchar_t& character : normalizedValue) {
+        character = static_cast<wchar_t>(std::towlower(static_cast<wint_t>(character)));
+    }
+
+    if (normalizedValue == L"trace") {
+        level = spdlog::level::trace;
+        return true;
+    }
+
+    if (normalizedValue == L"debug") {
+        level = spdlog::level::debug;
+        return true;
+    }
+
+    if (normalizedValue == L"info") {
+        level = spdlog::level::info;
+        return true;
+    }
+
+    if (normalizedValue == L"warn" || normalizedValue == L"warning") {
+        level = spdlog::level::warn;
+        return true;
+    }
+
+    if (normalizedValue == L"error") {
+        level = spdlog::level::err;
+        return true;
+    }
+
+    if (normalizedValue == L"critical" || normalizedValue == L"fatal") {
+        level = spdlog::level::critical;
+        return true;
+    }
+
+    if (normalizedValue == L"off") {
+        level = spdlog::level::off;
+        return true;
+    }
+
+    return false;
+}
+
+spdlog::level::level_enum DefaultLogLevel() noexcept {
+#ifdef NDEBUG
+    return spdlog::level::info;
+#else
+    return spdlog::level::debug;
+#endif
+}
+
+spdlog::level::level_enum ResolveLogLevel() noexcept {
+    spdlog::level::level_enum resolvedLevel = DefaultLogLevel();
+    std::wstring environmentValue;
+    if (!TryGetEnvironmentVariableValue(kLogLevelEnvironmentVariable, environmentValue)) {
+        return resolvedLevel;
+    }
+
+    if (TryParseLogLevelOverride(environmentValue, resolvedLevel)) {
+        return resolvedLevel;
+    }
+
+    return DefaultLogLevel();
+}
 
 spdlog::filename_t ToSpdlogFilename(const std::wstring& path) {
 #ifdef SPDLOG_WCHAR_FILENAMES
@@ -183,7 +285,7 @@ std::shared_ptr<spdlog::logger> CreateLogger(const std::wstring& logFilePath, st
 
         std::vector<spdlog::sink_ptr> sinks{rotatingFileSink, debuggerSink};
         auto logger = std::make_shared<spdlog::logger>("voxinsert", sinks.begin(), sinks.end());
-        logger->set_level(spdlog::level::debug);
+        logger->set_level(ResolveLogLevel());
         logger->flush_on(spdlog::level::info);
         logger->set_pattern("%Y-%m-%dT%H:%M:%S.%eZ [%l] %v", spdlog::pattern_time_type::utc);
 

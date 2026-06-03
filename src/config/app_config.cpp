@@ -32,13 +32,22 @@ constexpr char kFallbackConfigJson[] = R"json({
     "language_hint": "en",
         "openai": {
             "model": "gpt-4o-transcribe",
+            "streaming_model": "gpt-realtime-whisper",
             "credential_target": "VoiceAgentTyper/OpenAI",
             "prompt": "The user is dictating technical prompts for coding agents, IDEs, VS Code, GitHub Copilot, Claude Code, Codex, Python, C++, FastAPI, LangChain, OpenAI, Docker, GitHub, APIs, terminals, embeddings, rerankers, and software engineering workflows."
         },
         "mistral": {
             "model": "voxtral-mini-latest",
+            "streaming_model": "voxtral-mini-transcribe-realtime-2602",
             "credential_target": "VoiceAgentTyper/Mistral",
             "context_bias": "VoxInsert,VS_Code,GitHub_Copilot,Claude_Code,Codex,Python,C++,FastAPI,LangChain,OpenAI,Docker,GitHub,APIs,terminals,embeddings,rerankers"
+        },
+        "streaming": {
+            "enabled": true,
+            "provider": "openai_realtime",
+            "append_batch_ms": 20,
+            "finalize_timeout_ms": 8000,
+            "fallback_to_file_transcription": true
         }
   },
   "insertion": {
@@ -901,6 +910,10 @@ bool LoadConfiguredTranscriptionSettings(const json& root, TranscriptionConfig& 
         return false;
     }
 
+    if (!LoadConfiguredNestedString(root, "transcription", "openai", "streaming_model", transcription.openAi.streamingModel, failureReason)) {
+        return false;
+    }
+
     if (!LoadConfiguredNestedString(root, "transcription", "openai", "credential_target", transcription.openAi.credentialTarget, failureReason)) {
         return false;
     }
@@ -910,6 +923,10 @@ bool LoadConfiguredTranscriptionSettings(const json& root, TranscriptionConfig& 
     }
 
     if (!LoadConfiguredNestedString(root, "transcription", "mistral", "model", transcription.mistral.model, failureReason)) {
+        return false;
+    }
+
+    if (!LoadConfiguredNestedString(root, "transcription", "mistral", "streaming_model", transcription.mistral.streamingModel, failureReason)) {
         return false;
     }
 
@@ -927,6 +944,52 @@ bool LoadConfiguredTranscriptionSettings(const json& root, TranscriptionConfig& 
     if (transcription.mistral.model == "voxtral-small-latest") {
         transcription.mistral.model = "voxtral-mini-latest";
     }
+
+    const auto transcriptionIt = root.find("transcription");
+    if (transcriptionIt != root.end() && transcriptionIt->is_object()) {
+        const auto streamingIt = transcriptionIt->find("streaming");
+        if (streamingIt != transcriptionIt->end()) {
+            if (!streamingIt->is_object()) {
+                failureReason = L"Config section transcription.streaming must be an object.";
+                return false;
+            }
+
+            const json streamingSection{{"streaming", *streamingIt}};
+            if (!LoadConfiguredBoolean(streamingSection, "streaming", "enabled", transcription.streaming.enabled, failureReason)) {
+                return false;
+            }
+
+            if (!LoadConfiguredString(streamingSection, "streaming", "provider", transcription.streaming.provider, failureReason)) {
+                return false;
+            }
+
+            if (transcription.streaming.provider != "openai_realtime" &&
+                transcription.streaming.provider != "mistral_realtime") {
+                failureReason = L"Unsupported transcription.streaming.provider value '";
+                failureReason += WideFromUtf8(transcription.streaming.provider);
+                failureReason += L"'. Supported values are openai_realtime and mistral_realtime.";
+                return false;
+            }
+
+            if (!LoadConfiguredPositiveInteger(streamingSection, "streaming", "append_batch_ms", 10, transcription.streaming.appendBatchMs, failureReason)) {
+                return false;
+            }
+
+            if (!LoadConfiguredPositiveInteger(streamingSection, "streaming", "finalize_timeout_ms", 250, transcription.streaming.finalizeTimeoutMs, failureReason)) {
+                return false;
+            }
+
+            if (!LoadConfiguredBoolean(streamingSection, "streaming", "fallback_to_file_transcription", transcription.streaming.fallbackToFileTranscription, failureReason)) {
+                return false;
+            }
+        }
+    }
+
+    // The realtime streaming backend always follows the selected transcription
+    // provider so the single provider choice drives both the file and streaming
+    // paths and the fallback stays vendor-consistent.
+    transcription.streaming.provider =
+        (transcription.provider == "mistral") ? "mistral_realtime" : "openai_realtime";
 
     return true;
 }
@@ -1081,6 +1144,10 @@ bool SaveAppSettings(const AppConfig& config, const AppSettingsUpdate& settings,
         return false;
     }
 
+    if (!EnsureNestedConfigSection(root, "transcription", "streaming", failureReason)) {
+        return false;
+    }
+
     root["hotkeys"]["toggle_recording"] = Utf8FromWide(SerializeHotkeyBinding(settings.toggleRecordingHotkey));
     root["hotkeys"]["cancel_recording"] = Utf8FromWide(SerializeHotkeyBinding(settings.cancelRecordingHotkey));
     root["transcription"]["provider"] = settings.transcription.provider;
@@ -1089,11 +1156,18 @@ bool SaveAppSettings(const AppConfig& config, const AppSettingsUpdate& settings,
     root["transcription"].erase("credential_target");
     root["transcription"].erase("prompt");
     root["transcription"]["openai"]["model"] = settings.transcription.openAi.model;
+    root["transcription"]["openai"]["streaming_model"] = settings.transcription.openAi.streamingModel;
     root["transcription"]["openai"]["credential_target"] = settings.transcription.openAi.credentialTarget;
     root["transcription"]["openai"]["prompt"] = settings.transcription.openAi.prompt;
     root["transcription"]["mistral"]["model"] = settings.transcription.mistral.model;
+    root["transcription"]["mistral"]["streaming_model"] = settings.transcription.mistral.streamingModel;
     root["transcription"]["mistral"]["credential_target"] = settings.transcription.mistral.credentialTarget;
     root["transcription"]["mistral"]["context_bias"] = NormalizeMistralContextBias(settings.transcription.mistral.contextBias);
+    root["transcription"]["streaming"]["enabled"] = settings.transcription.streaming.enabled;
+    root["transcription"]["streaming"]["provider"] = settings.transcription.streaming.provider;
+    root["transcription"]["streaming"]["append_batch_ms"] = settings.transcription.streaming.appendBatchMs;
+    root["transcription"]["streaming"]["finalize_timeout_ms"] = settings.transcription.streaming.finalizeTimeoutMs;
+    root["transcription"]["streaming"]["fallback_to_file_transcription"] = settings.transcription.streaming.fallbackToFileTranscription;
     root["ui"]["show_status_pill"] = settings.ui.showStatusPill;
     root["ui"]["status_pill_position"] = StatusPillPlacementToConfigString(settings.ui.statusPillPlacement);
     root["system"]["auto_start_with_windows"] = settings.system.autoStartWithWindows;

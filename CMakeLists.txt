@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.25)
 
 project(VoxInsert
-    VERSION 0.1.1
+    VERSION 0.1.2
     LANGUAGES CXX
 )
 
@@ -10,6 +10,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 find_package(cpr CONFIG REQUIRED)
+find_package(ixwebsocket CONFIG REQUIRED)
 find_package(nlohmann_json CONFIG REQUIRED)
 find_package(portaudio CONFIG REQUIRED)
 find_package(spdlog CONFIG REQUIRED)
@@ -35,12 +36,16 @@ add_executable(VoxInsert WIN32
     src/runtime/app_host_settings.cpp
     src/runtime/post_recording_workflow.cpp
     src/runtime/runtime_config_applier.cpp
+    src/runtime/streaming_recording_controller.cpp
     src/runtime/app_host_tray.cpp
     src/runtime/startup_registration.cpp
     src/security/api_credential_store.cpp
     src/testing/app_host_smoke_test.cpp
     src/transcription/mistral_transcription_service.cpp
+    src/transcription/mistral_realtime_streaming_service.cpp
+    src/transcription/openai_realtime_streaming_service.cpp
     src/transcription/openai_transcription_service.cpp
+    src/transcription/transcript_assembler.cpp
     src/transcription/transcription_client.cpp
     src/ui/settings_dialog.cpp
     src/ui/status_pill.cpp
@@ -58,6 +63,7 @@ target_link_libraries(VoxInsert PRIVATE
     Comctl32
     cpr::cpr
     Gdiplus
+    ixwebsocket::ixwebsocket
     nlohmann_json::nlohmann_json
     Ole32
     ${OPUSENC_LIBRARY}
@@ -85,4 +91,36 @@ if (MSVC)
     target_link_options(VoxInsert PRIVATE
         /MANIFEST:NO
     )
+endif()
+
+option(VOXINSERT_BUILD_TESTS "Build VoxInsert unit tests" ON)
+
+if (VOXINSERT_BUILD_TESTS)
+    enable_testing()
+
+    add_executable(voxinsert_streaming_tests
+        src/transcription/transcript_assembler.cpp
+        src/transcription/fake_streaming_transcription_service.cpp
+        tests/streaming_transcription_tests.cpp
+    )
+
+    target_include_directories(voxinsert_streaming_tests PRIVATE src)
+
+    target_compile_definitions(voxinsert_streaming_tests PRIVATE
+        UNICODE
+        _UNICODE
+        WIN32_LEAN_AND_MEAN
+        NOMINMAX
+    )
+
+    if (MSVC)
+        target_compile_options(voxinsert_streaming_tests PRIVATE
+            /W4
+            /permissive-
+            /utf-8
+            /EHsc
+        )
+    endif()
+
+    add_test(NAME streaming_transcription COMMAND voxinsert_streaming_tests)
 endif()
