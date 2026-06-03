@@ -84,9 +84,9 @@ public:
     LinearResampler(int inputRate, int outputRate)
         : inputRate_(inputRate), outputRate_(outputRate) {}
 
-    std::vector<int16_t> Process(const std::vector<int16_t>& input) {
+    std::vector<int16_t> Process(std::span<const int16_t> input) {
         if (inputRate_ == outputRate_) {
-            return input;
+            return std::vector<int16_t>(input.begin(), input.end());
         }
 
         std::vector<int16_t> output;
@@ -595,7 +595,7 @@ StreamingBackendCapabilities OpenAiRealtimeStreamingBackend::Capabilities(const 
     capabilities.supportsManualCommit = true;
     capabilities.supportsServerTurnDetection = false;
     capabilities.requiredSampleRate = kRealtimeSampleRate;
-    capabilities.preferredAppendBatchMs = 80;
+    capabilities.preferredAppendBatchMs = 20;
     return capabilities;
 }
 

@@ -9,7 +9,9 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstddef>
 #include <exception>
+#include <iterator>
 #include <utility>
 
 namespace voxinsert {
@@ -19,6 +21,8 @@ using StreamingClock = std::chrono::steady_clock;
 
 constexpr size_t kAudioQueueCapacity = 512;
 constexpr size_t kEventQueueCapacity = 512;
+constexpr int kMinimumAppendBatchMs = 10;
+constexpr unsigned long kMaxInteractiveFramesPerBuffer = 256;
 
 int64_t ElapsedMilliseconds(StreamingClock::time_point startedAt, StreamingClock::time_point finishedAt) {
     return std::chrono::duration_cast<std::chrono::milliseconds>(finishedAt - startedAt).count();
@@ -38,10 +42,24 @@ bool IsSupportedStreamingProvider(const std::string& provider) {
     return provider == "openai_realtime" || provider == "mistral_realtime";
 }
 
+int EffectiveAppendBatchMs(int configuredAppendBatchMs, const StreamingBackendCapabilities& capabilities) {
+    const int configured = std::max(configuredAppendBatchMs, kMinimumAppendBatchMs);
+    const int providerPreferred = std::max(capabilities.preferredAppendBatchMs, kMinimumAppendBatchMs);
+    return std::clamp(configured, kMinimumAppendBatchMs, providerPreferred);
+}
+
+size_t CaptureSlotSampleCapacity(const AudioConfig& audio) {
+    const unsigned long framesPerRead = std::min(audio.framesPerBuffer, kMaxInteractiveFramesPerBuffer);
+    const int channelCount = std::max(audio.channelCount, 1);
+    return static_cast<size_t>(framesPerRead) * static_cast<size_t>(channelCount);
+}
+
 } // namespace
 
 StreamingRecordingController::StreamingRecordingController()
-    : audioQueue_(kAudioQueueCapacity), eventQueue_(kEventQueueCapacity) {}
+    : freeAudioSlots_(kAudioQueueCapacity),
+      readyAudioSlots_(kAudioQueueCapacity),
+      eventQueue_(kEventQueueCapacity) {}
 
 StreamingRecordingController::~StreamingRecordingController() {
     Cancel();
@@ -63,7 +81,7 @@ bool StreamingRecordingController::Start(const StreamingRecordingRequest& reques
     request_ = request;
 
     const StreamingTranscriptionConfig& streaming = request_.config->transcription.streaming;
-    appendBatchMs_ = streaming.appendBatchMs;
+    appendBatchMs_ = std::max(streaming.appendBatchMs, kMinimumAppendBatchMs);
 
     if (!IsSupportedStreamingProvider(streaming.provider)) {
         failureReason = L"Unsupported streaming transcription provider '";
@@ -88,16 +106,17 @@ bool StreamingRecordingController::Start(const StreamingRecordingRequest& reques
     failed_ = false;
     backendFailureReason_.clear();
     audioForwardingEnabled_.store(false);
+    audioRingClosed_.store(true, std::memory_order_release);
     backpressureObserved_.store(false);
     sessionSendFailed_.store(false);
     nextSequence_.store(0);
+    ResetAudioSlots(CaptureSlotSampleCapacity(request_.config->audio));
 
-    // The queues are reused across recordings; a previous Finish()/Cancel()
+    // The event queue is reused across recordings; a previous Finish()/Cancel()
     // left them closed. Re-open and drain them so this session's audio and
     // backend events flow again. Without this, only the first recording after
     // launch works and every later one stalls (no audio sent, finalize event
     // dropped) until the finalize timeout falls back to file transcription.
-    audioQueue_.Reset();
     eventQueue_.Reset();
 
     audioForwardingEnabled_.store(true);
@@ -110,15 +129,41 @@ bool StreamingRecordingController::Start(const StreamingRecordingRequest& reques
                 return;
             }
 
-            CapturedAudioChunk chunk;
-            chunk.sessionId = sessionId_;
-            chunk.utteranceId = utteranceId_;
-            chunk.sequence = nextSequence_.fetch_add(1);
-            chunk.format = captureFormat_;
-            chunk.pcm16.assign(data, data + sampleCount);
-            if (!audioQueue_.TryPush(std::move(chunk))) {
-                backpressureObserved_.store(true);
+            if (data == nullptr || sampleCount == 0) {
+                return;
             }
+
+            size_t slotIndex = 0;
+            if (!freeAudioSlots_.TryPop(slotIndex)) {
+                MarkStreamingTranscriptUntrusted("streaming audio slot ring full; dropping live audio");
+                return;
+            }
+
+            if (slotIndex >= audioSlots_.size()) {
+                MarkStreamingTranscriptUntrusted("streaming audio slot ring produced an invalid slot index");
+                return;
+            }
+
+            CapturedAudioSlot& slot = audioSlots_[slotIndex];
+            if (sampleCount > slot.pcm16.size()) {
+                const bool returned = freeAudioSlots_.TryPush(slotIndex);
+                (void)returned;
+                MarkStreamingTranscriptUntrusted("streaming audio callback exceeded the preallocated slot size");
+                return;
+            }
+
+            slot.sequence = nextSequence_.fetch_add(1, std::memory_order_relaxed);
+            slot.sampleCount = sampleCount;
+            std::copy_n(data, sampleCount, slot.pcm16.data());
+
+            if (!readyAudioSlots_.TryPush(slotIndex)) {
+                const bool returned = freeAudioSlots_.TryPush(slotIndex);
+                (void)returned;
+                MarkStreamingTranscriptUntrusted("streaming ready audio slot ring full; dropping live audio");
+                return;
+            }
+
+            readyAudioSignal_.release();
         },
         failureReason);
     const auto captureStartedAt = StreamingClock::now();
@@ -126,6 +171,8 @@ bool StreamingRecordingController::Start(const StreamingRecordingRequest& reques
 
     if (!recorderStarted) {
         audioForwardingEnabled_.store(false);
+        audioRingClosed_.store(true, std::memory_order_release);
+        readyAudioSignal_.release();
         backend_.reset();
         return false;
     }
@@ -134,7 +181,8 @@ bool StreamingRecordingController::Start(const StreamingRecordingRequest& reques
 
     const auto recordBackendStartupFailure = [this](std::wstring reason) {
         audioForwardingEnabled_.store(false);
-        audioQueue_.Close();
+        audioRingClosed_.store(true, std::memory_order_release);
+        readyAudioSignal_.release();
         sessionSendFailed_.store(true);
         {
             std::scoped_lock lock(finalizeMutex_);
@@ -152,6 +200,17 @@ bool StreamingRecordingController::Start(const StreamingRecordingRequest& reques
             failureReason += L"'.";
             recordBackendStartupFailure(failureReason);
             return true;
+        }
+
+        const StreamingBackendCapabilities capabilities = backend_->Capabilities(request_.config->transcription);
+        appendBatchMs_ = EffectiveAppendBatchMs(streaming.appendBatchMs, capabilities);
+        if (request_.logger != nullptr) {
+            request_.logger->debug(
+                "streaming append batching configured_append_batch_ms={} provider_preferred_append_batch_ms={} effective_append_batch_ms={} provider={}",
+                streaming.appendBatchMs,
+                capabilities.preferredAppendBatchMs,
+                appendBatchMs_,
+                streaming.provider);
         }
 
         session_ = backend_->CreateSession(
@@ -173,7 +232,7 @@ bool StreamingRecordingController::Start(const StreamingRecordingRequest& reques
                     ElapsedMilliseconds(backendSetupStartedAt, StreamingClock::now()),
                     ElapsedMilliseconds(startupStartedAt, StreamingClock::now()),
                     streaming.provider,
-                    audioQueue_.Size());
+                    ReadyAudioSlotCount());
             }
             return true;
         }
@@ -193,7 +252,7 @@ bool StreamingRecordingController::Start(const StreamingRecordingRequest& reques
                     ElapsedMilliseconds(backendSetupStartedAt, StreamingClock::now()),
                     ElapsedMilliseconds(startupStartedAt, StreamingClock::now()),
                     streaming.provider,
-                    audioQueue_.Size());
+                    ReadyAudioSlotCount());
             }
             return true;
         }
@@ -216,7 +275,7 @@ bool StreamingRecordingController::Start(const StreamingRecordingRequest& reques
                 ElapsedMilliseconds(backendSetupStartedAt, StreamingClock::now()),
                 ElapsedMilliseconds(startupStartedAt, StreamingClock::now()),
                 streaming.provider,
-                audioQueue_.Size());
+                ReadyAudioSlotCount());
         }
         return true;
     }
@@ -237,14 +296,14 @@ bool StreamingRecordingController::Start(const StreamingRecordingRequest& reques
                 ElapsedMilliseconds(backendSetupStartedAt, StreamingClock::now()),
                 ElapsedMilliseconds(startupStartedAt, StreamingClock::now()),
                 streaming.provider,
-                audioQueue_.Size());
+                ReadyAudioSlotCount());
         }
         return true;
     }
 
     const auto backendReadyAt = StreamingClock::now();
     const int64_t backendSetupAfterCaptureMs = ElapsedMilliseconds(backendSetupStartedAt, backendReadyAt);
-    const size_t queuedAudioChunksBeforePumps = audioQueue_.Size();
+    const size_t queuedAudioChunksBeforePumps = ReadyAudioSlotCount();
 
     try {
         eventPump_ = std::jthread([this](std::stop_token stopToken) { EventPumpMain(std::move(stopToken)); });
@@ -311,7 +370,10 @@ bool StreamingRecordingController::Start(const StreamingRecordingRequest& reques
     return true;
 }
 
-void StreamingRecordingController::FlushAppendBatch(std::vector<int16_t>& batch) noexcept {
+void StreamingRecordingController::FlushAppendBatch(
+    std::vector<int16_t>& batch,
+    std::uint64_t firstSequence,
+    std::uint64_t lastSequence) noexcept {
     if (batch.empty() || session_ == nullptr) {
         batch.clear();
         return;
@@ -321,9 +383,10 @@ void StreamingRecordingController::FlushAppendBatch(std::vector<int16_t>& batch)
     command.kind = StreamingBackendCommandKind::AppendAudio;
     command.sessionId = sessionId_;
     command.utteranceId = utteranceId_;
+    command.firstSequence = firstSequence;
+    command.lastSequence = lastSequence;
     command.format = captureFormat_;
-    command.pcm16 = std::move(batch);
-    batch.clear();
+    command.pcm16 = std::span<const int16_t>(batch.data(), batch.size());
 
     std::wstring failureReason;
     if (!session_->AppendAudio(command, failureReason)) {
@@ -332,24 +395,62 @@ void StreamingRecordingController::FlushAppendBatch(std::vector<int16_t>& batch)
         if (!sessionSendFailed_.exchange(true) && request_.logger != nullptr) {
             request_.logger->warn("streaming append failed: {}", Utf8FromWide(failureReason));
         }
+        MarkStreamingTranscriptUntrusted("streaming append failed; live transcript is untrusted");
     }
+    batch.clear();
 }
 
 void StreamingRecordingController::AudioPumpMain(std::stop_token stopToken) noexcept {
     const int sampleRate = captureFormat_.sampleRate > 0 ? captureFormat_.sampleRate : 16000;
     const size_t batchThreshold =
-        static_cast<size_t>(static_cast<int64_t>(sampleRate) * std::max(appendBatchMs_, 10) / 1000);
+        static_cast<size_t>(static_cast<int64_t>(sampleRate) * std::max(appendBatchMs_, kMinimumAppendBatchMs) / 1000);
 
     std::vector<int16_t> batch;
-    CapturedAudioChunk chunk;
-    while (audioQueue_.WaitPop(chunk, stopToken)) {
-        batch.insert(batch.end(), chunk.pcm16.begin(), chunk.pcm16.end());
-        if (batch.size() >= batchThreshold) {
-            FlushAppendBatch(batch);
+    batch.reserve(batchThreshold + audioSlotSampleCapacity_);
+    bool batchHasSequence = false;
+    std::uint64_t firstBatchSequence = 0;
+    std::uint64_t lastBatchSequence = 0;
+
+    for (;;) {
+        bool drainedAny = false;
+        size_t slotIndex = 0;
+        while (readyAudioSlots_.TryPop(slotIndex)) {
+            drainedAny = true;
+            if (slotIndex >= audioSlots_.size()) {
+                MarkStreamingTranscriptUntrusted("streaming audio pump received an invalid slot index");
+                continue;
+            }
+
+            CapturedAudioSlot& slot = audioSlots_[slotIndex];
+            if (!batchHasSequence) {
+                firstBatchSequence = slot.sequence;
+                batchHasSequence = true;
+            }
+            lastBatchSequence = slot.sequence;
+            batch.insert(batch.end(), slot.pcm16.begin(), std::next(slot.pcm16.begin(), static_cast<std::ptrdiff_t>(slot.sampleCount)));
+            slot.sampleCount = 0;
+
+            if (!freeAudioSlots_.TryPush(slotIndex)) {
+                MarkStreamingTranscriptUntrusted("streaming free audio slot ring full");
+            }
+
+            if (batch.size() >= batchThreshold) {
+                FlushAppendBatch(batch, firstBatchSequence, lastBatchSequence);
+                batchHasSequence = false;
+            }
+        }
+
+        if (audioRingClosed_.load(std::memory_order_acquire) || stopToken.stop_requested()) {
+            break;
+        }
+
+        if (!drainedAny) {
+            const bool acquired = readyAudioSignal_.try_acquire_for(std::chrono::milliseconds(5));
+            (void)acquired;
         }
     }
 
-    FlushAppendBatch(batch);
+    FlushAppendBatch(batch, firstBatchSequence, lastBatchSequence);
 }
 
 void StreamingRecordingController::EventPumpMain(std::stop_token stopToken) noexcept {
@@ -401,15 +502,14 @@ void StreamingRecordingController::EventPumpMain(std::stop_token stopToken) noex
 
 void StreamingRecordingController::OnBackendEvent(BackendTranscriptEvent event) {
     if (!eventQueue_.TryPush(std::move(event))) {
-        if (!backpressureObserved_.exchange(true) && request_.logger != nullptr) {
-            request_.logger->warn("streaming event queue full; dropping backend events");
-        }
+        MarkStreamingTranscriptUntrusted("streaming event queue full; dropping backend events");
     }
 }
 
 void StreamingRecordingController::StopWorkers() noexcept {
     audioForwardingEnabled_.store(false);
-    audioQueue_.Close();
+    audioRingClosed_.store(true, std::memory_order_release);
+    readyAudioSignal_.release();
     eventQueue_.Close();
     if (audioPump_.joinable()) {
         audioPump_.request_stop();
@@ -443,7 +543,8 @@ StreamingRecordingResult StreamingRecordingController::Finish() noexcept {
         const int64_t stopRecordingMs = ElapsedMilliseconds(stopRecordingStartedAt, StreamingClock::now());
 
         // 2. Drain queued audio to the backend, then commit the utterance.
-        audioQueue_.Close();
+        audioRingClosed_.store(true, std::memory_order_release);
+        readyAudioSignal_.release();
         if (audioPump_.joinable()) {
             audioPump_.join();
         }
@@ -457,8 +558,19 @@ StreamingRecordingResult StreamingRecordingController::Finish() noexcept {
         if (session_ != nullptr) {
             std::wstring commitFailure;
             commitSucceeded = session_->CommitUtterance(utteranceId_, commitFailure);
-            if (!commitSucceeded && request_.logger != nullptr) {
-                request_.logger->warn("streaming commit failed: {}", Utf8FromWide(commitFailure));
+            if (!commitSucceeded) {
+                sessionSendFailed_.store(true, std::memory_order_release);
+                {
+                    std::scoped_lock lock(finalizeMutex_);
+                    if (backendFailureReason_.empty()) {
+                        backendFailureReason_ = commitFailure.empty()
+                            ? L"Streaming commit failed before a trusted final transcript arrived."
+                            : commitFailure;
+                    }
+                }
+                if (request_.logger != nullptr) {
+                    request_.logger->warn("streaming commit failed: {}", Utf8FromWide(commitFailure));
+                }
             }
         }
 
@@ -499,8 +611,14 @@ StreamingRecordingResult StreamingRecordingController::Finish() noexcept {
         std::wstring streamingFailureReason;
         {
             std::scoped_lock lock(finalizeMutex_);
-            streamingFailed = failed_ || !finalized_;
+            streamingFailed = failed_ || !finalized_ || backpressureObserved_.load() || sessionSendFailed_.load();
             streamingFailureReason = backendFailureReason_;
+        }
+        if (backpressureObserved_.load() && streamingFailureReason.empty()) {
+            streamingFailureReason = L"Streaming audio or backend-event backpressure made the live transcript untrusted.";
+        }
+        if (sessionSendFailed_.load() && streamingFailureReason.empty()) {
+            streamingFailureReason = L"Streaming backend send failed before a trusted final transcript arrived.";
         }
 
         std::string transcriptUtf8;
@@ -654,6 +772,40 @@ void StreamingRecordingController::Cancel() noexcept {
     session_.reset();
     backend_.reset();
     active_.store(false);
+}
+
+void StreamingRecordingController::ResetAudioSlots(size_t sampleCapacity) {
+    sampleCapacity = std::max(sampleCapacity, static_cast<size_t>(1));
+    while (readyAudioSignal_.try_acquire()) {
+    }
+
+    audioSlotSampleCapacity_ = sampleCapacity;
+    audioSlots_.resize(kAudioQueueCapacity);
+    freeAudioSlots_.Reset();
+    readyAudioSlots_.Reset();
+
+    for (size_t index = 0; index < audioSlots_.size(); ++index) {
+        CapturedAudioSlot& slot = audioSlots_[index];
+        slot.sequence = 0;
+        slot.sampleCount = 0;
+        slot.pcm16.resize(audioSlotSampleCapacity_);
+        const bool pushed = freeAudioSlots_.TryPush(index);
+        (void)pushed;
+    }
+
+    audioRingClosed_.store(false, std::memory_order_release);
+}
+
+void StreamingRecordingController::MarkStreamingTranscriptUntrusted(const char* reason) noexcept {
+    audioForwardingEnabled_.store(false, std::memory_order_release);
+    sessionSendFailed_.store(true, std::memory_order_release);
+    if (!backpressureObserved_.exchange(true, std::memory_order_acq_rel) && request_.logger != nullptr) {
+        request_.logger->warn("{}; retained PCM fallback will be used", reason);
+    }
+}
+
+size_t StreamingRecordingController::ReadyAudioSlotCount() const noexcept {
+    return readyAudioSlots_.Size();
 }
 
 } // namespace voxinsert

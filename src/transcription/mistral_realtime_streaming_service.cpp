@@ -549,7 +549,7 @@ StreamingBackendCapabilities MistralRealtimeStreamingBackend::Capabilities(const
     capabilities.supportsManualCommit = true;
     capabilities.supportsServerTurnDetection = false;
     capabilities.requiredSampleRate = kRealtimeSampleRate;
-    capabilities.preferredAppendBatchMs = 80;
+    capabilities.preferredAppendBatchMs = 20;
     return capabilities;
 }
 
