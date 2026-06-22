@@ -62,7 +62,7 @@ constexpr char kFallbackConfigJson[] = R"json({
     "use_silence_trimming": true,
     "remove_leading_trailing_silence": true,
     "remove_internal_silence_longer_than_ms": 1000,
-    "max_recording_seconds": 300
+    "max_recording_seconds": 900
   },
   "ui": {
     "show_status_pill": true,

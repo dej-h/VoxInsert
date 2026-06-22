@@ -736,12 +736,6 @@ StreamingRecordingResult StreamingRecordingController::Finish() noexcept {
             transcriptUtf8 = assembler_.FinalTranscriptUtf8();
         }
 
-        if (!stopped) {
-            result.errorTitle = L"VoxInsert recording error";
-            result.failureReason = failureReason;
-            return result;
-        }
-
         std::filesystem::path wavPath;
         int64_t writeWavMs = 0;
         bool wavWriteAttempted = false;
@@ -751,6 +745,13 @@ StreamingRecordingResult StreamingRecordingController::Finish() noexcept {
             }
 
             wavWriteAttempted = true;
+            if (samples.empty()) {
+                if (request_.logger != nullptr) {
+                    request_.logger->warn("streaming path has no retained PCM samples; skipping WAV write");
+                }
+                return;
+            }
+
             const auto writeWavStartedAt = StreamingClock::now();
             std::wstring wavFailureReason;
             if (request_.wavWriter != nullptr &&
@@ -771,8 +772,15 @@ StreamingRecordingResult StreamingRecordingController::Finish() noexcept {
             if (request_.archiveService == nullptr || !request_.config->archive.enabled) {
                 return;
             }
+            ArchiveConfig archive = request_.config->archive;
+            if (samples.empty()) {
+                archive.persistAudio = false;
+            }
+            if (!archive.persistTranscript && !archive.persistAudio) {
+                return;
+            }
             request_.archiveService->Enqueue(ArchiveRequest{
-                .archive = request_.config->archive,
+                .archive = archive,
                 .audio = request_.config->audio,
                 .transcription = request_.config->transcription,
                 .samples = samples,
@@ -801,6 +809,58 @@ StreamingRecordingResult StreamingRecordingController::Finish() noexcept {
             insertionMs = ElapsedMilliseconds(insertionStartedAt, StreamingClock::now());
             return true;
         };
+
+        const auto useBestEffortStreamingTranscript = [&](const std::wstring& reason) {
+            if (transcriptUtf8.empty()) {
+                result.errorTitle = L"VoxInsert transcription error";
+                result.failureReason = reason.empty()
+                    ? L"The streaming transcription returned no text."
+                    : reason;
+                return false;
+            }
+
+            result.hasTranscript = true;
+            result.transcript = WideFromUtf8(transcriptUtf8);
+            DispatchTranscriptPreview(std::wstring(result.transcript), std::wstring{}, true);
+
+            if (request_.logger != nullptr) {
+                request_.logger->warn(
+                    "using best-effort streaming transcript after failure ({} bytes): {}",
+                    transcriptUtf8.size(),
+                    reason.empty() ? "no failure detail" : Utf8FromWide(reason));
+            }
+
+            if (!insertTranscript()) {
+                enqueueArchive(false);
+                return false;
+            }
+
+            enqueueArchive(true);
+
+            if (request_.logger != nullptr) {
+                request_.logger->debug(
+                    "post-recording latency outcome=streaming_best_effort stop_recording={}ms transcription={}ms insert={}ms total={}ms transcript_utf8_bytes={}",
+                    stopRecordingMs,
+                    transcriptionMs,
+                    insertionMs,
+                    ElapsedMilliseconds(workflowStartedAt, StreamingClock::now()),
+                    transcriptUtf8.size());
+                request_.logger->info("best-effort streaming transcription inserted into the focused text field via clipboard paste");
+            }
+
+            result.success = true;
+            result.showDone = true;
+            return true;
+        };
+
+        if (!stopped) {
+            const bool insertedBestEffort = useBestEffortStreamingTranscript(failureReason);
+            if (!insertedBestEffort && !result.hasTranscript) {
+                result.errorTitle = L"VoxInsert recording error";
+                result.failureReason = failureReason;
+            }
+            return result;
+        }
 
         if (request_.smokeTest) {
             writeWavIfNeeded();
@@ -865,12 +925,22 @@ StreamingRecordingResult StreamingRecordingController::Finish() noexcept {
                 result.fallbackUsed = true;
             }
             else {
+                if (!transcriptUtf8.empty()) {
+                    useBestEffortStreamingTranscript(fallbackFailure);
+                    return result;
+                }
+
                 result.errorTitle = L"VoxInsert transcription error";
                 result.failureReason = fallbackFailure;
                 return result;
             }
         }
         else {
+            if (!transcriptUtf8.empty()) {
+                useBestEffortStreamingTranscript(streamingFailureReason);
+                return result;
+            }
+
             result.errorTitle = L"VoxInsert transcription error";
             result.failureReason = streamingFailureReason.empty()
                 ? L"The streaming transcription returned no text."

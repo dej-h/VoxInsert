@@ -25,7 +25,7 @@ struct AudioConfig {
     int sampleRate = 16000;
     int channelCount = 1;
     unsigned long framesPerBuffer = 256;
-    int maxRecordingSeconds = 300;
+    int maxRecordingSeconds = 900;
 };
 
 struct OpenAiTranscriptionProviderConfig {

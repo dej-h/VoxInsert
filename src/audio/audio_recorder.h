@@ -48,6 +48,7 @@ private:
     std::atomic<int64_t> stopRequestedAtTicks_{0};
     bool startupCompleted_ = false;
     bool startupSucceeded_ = false;
+    bool maxRecordingLengthReached_ = false;
     bool portAudioInitialized_ = false;
 };
 
