@@ -19,6 +19,7 @@ Out of the box it supports:
 - OpenAI or Mistral transcription
 - automatic clipboard paste into the focused app
 - a small status pill while recording, transcribing, and inserting
+- optional live transcript preview inside the status pill
 - Settings UI for provider choice, hotkeys, credentials, startup, and archive options
 - optional local archives with Opus audio, transcript text, and metadata
 
@@ -94,6 +95,7 @@ Most users should change settings through the tray menu instead of editing JSON 
 - edit the language hint and hotkeys
 - enable or disable Windows startup
 - enable, hide, or reposition the status pill
+- enable or disable live transcript preview inside the status pill
 - enable local archive output and choose what gets saved
 
 Settings are applied when the app is idle. The tray menu can also reload config from disk.

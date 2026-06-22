@@ -34,13 +34,16 @@ public:
         HWND ownerWindow,
         UINT trayIconId,
         bool enabled,
+        bool transcriptPreviewEnabled,
         StatusPillPlacement placement,
         const std::shared_ptr<spdlog::logger>& logger,
         std::wstring& failureReason);
 
     void Destroy() noexcept;
+    void SetTranscriptPreviewEnabled(bool enabled);
     void SetState(StatusPillState state, std::wstring_view errorText = {});
     void PostAmplitudeSample(float rms) noexcept;
+    void PostTranscriptPreview(std::wstring stableText, std::wstring unstableText, bool isFinal);
     void Reanchor();
 
 private:
@@ -53,9 +56,11 @@ private:
     void StopAnimationTimer();
     void HandleAnimationTick();
     void HandleAmplitudeSample(float rms);
+    void HandleTranscriptPreview(std::wstring stableText, std::wstring unstableText, bool isFinal);
     void BeginFadeOut(std::chrono::milliseconds duration);
     void HideNow();
     void Render();
+    bool ShouldShowTranscriptPreview() const noexcept;
     void DrawPill(HDC memoryDc, int width, int height, float opacity);
     RECT CalculateWindowRect(int width, int height) const;
     UINT CurrentDpi() const;
@@ -67,11 +72,15 @@ private:
     HWND window_ = nullptr;
     UINT trayIconId_ = 0;
     bool enabled_ = false;
+    bool transcriptPreviewEnabled_ = false;
     bool visible_ = false;
     bool fadingOut_ = false;
     StatusPillPlacement placement_ = StatusPillPlacement::TrayAnchor;
     StatusPillState state_ = StatusPillState::Idle;
     std::wstring errorText_;
+    std::wstring transcriptPreviewStableText_;
+    std::wstring transcriptPreviewUnstableText_;
+    bool transcriptPreviewFinal_ = false;
     std::shared_ptr<spdlog::logger> logger_;
     HICON anchorIcon_ = nullptr;
     ULONG_PTR gdiplusToken_ = 0;

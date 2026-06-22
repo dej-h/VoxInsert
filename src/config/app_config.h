@@ -68,6 +68,7 @@ struct InsertionConfig {
 
 struct UiConfig {
     bool showStatusPill = true;
+    bool showTranscriptPreview = false;
     StatusPillPlacement statusPillPlacement = StatusPillPlacement::TrayAnchor;
 };
 

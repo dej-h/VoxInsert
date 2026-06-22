@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstddef>
+#include <cwctype>
 #include <exception>
 #include <iterator>
 #include <utility>
@@ -23,6 +24,7 @@ constexpr size_t kAudioQueueCapacity = 512;
 constexpr size_t kEventQueueCapacity = 512;
 constexpr int kMinimumAppendBatchMs = 10;
 constexpr unsigned long kMaxInteractiveFramesPerBuffer = 256;
+constexpr int kLivePreviewUncertainWordCount = 4;
 
 int64_t ElapsedMilliseconds(StreamingClock::time_point startedAt, StreamingClock::time_point finishedAt) {
     return std::chrono::duration_cast<std::chrono::milliseconds>(finishedAt - startedAt).count();
@@ -52,6 +54,46 @@ size_t CaptureSlotSampleCapacity(const AudioConfig& audio) {
     const unsigned long framesPerRead = std::min(audio.framesPerBuffer, kMaxInteractiveFramesPerBuffer);
     const int channelCount = std::max(audio.channelCount, 1);
     return static_cast<size_t>(framesPerRead) * static_cast<size_t>(channelCount);
+}
+
+bool IsWhitespace(wchar_t ch) noexcept {
+    return std::iswspace(static_cast<wint_t>(ch)) != 0;
+}
+
+void MoveTrailingWordsToUnstablePreview(std::wstring& stableText, std::wstring& unstableText) {
+    if (!unstableText.empty() || stableText.empty()) {
+        return;
+    }
+
+    size_t end = stableText.size();
+    while (end > 0 && IsWhitespace(stableText[end - 1])) {
+        --end;
+    }
+    if (end == 0) {
+        return;
+    }
+
+    size_t start = end;
+    int wordsFound = 0;
+    while (start > 0 && wordsFound < kLivePreviewUncertainWordCount) {
+        while (start > 0 && IsWhitespace(stableText[start - 1])) {
+            --start;
+        }
+        while (start > 0 && !IsWhitespace(stableText[start - 1])) {
+            --start;
+        }
+        ++wordsFound;
+    }
+
+    while (start < end && IsWhitespace(stableText[start])) {
+        ++start;
+    }
+    if (start >= end) {
+        return;
+    }
+
+    unstableText = stableText.substr(start, end - start);
+    stableText.erase(start);
 }
 
 } // namespace
@@ -456,9 +498,45 @@ void StreamingRecordingController::AudioPumpMain(std::stop_token stopToken) noex
 void StreamingRecordingController::EventPumpMain(std::stop_token stopToken) noexcept {
     BackendTranscriptEvent event;
     while (eventQueue_.WaitPop(event, stopToken)) {
+        bool previewChanged = false;
+        TranscriptPreviewText previewText;
         {
             std::scoped_lock lock(assemblerMutex_);
-            assembler_.Apply(event);
+            assembler_.Apply(event, [&](const TranscriptPatch& patch) {
+                switch (patch.kind) {
+                case TranscriptPatchKind::AppendStableText:
+                case TranscriptPatchKind::ReplaceUnstableTail:
+                case TranscriptPatchKind::FinalizeUtterance:
+                case TranscriptPatchKind::ResetUtterance:
+                    previewChanged = true;
+                    break;
+                case TranscriptPatchKind::Error:
+                    break;
+                }
+            });
+
+            if (previewChanged && request_.onTranscriptPreview && request_.config != nullptr && request_.config->ui.showTranscriptPreview) {
+                previewText = assembler_.PreviewText();
+            }
+        }
+
+        if (previewChanged && !previewText.Empty()) {
+            try {
+                DispatchTranscriptPreview(
+                    WideFromUtf8(previewText.stableUtf8),
+                    WideFromUtf8(previewText.unstableUtf8),
+                    previewText.finalized);
+            }
+            catch (const std::exception& exception) {
+                if (request_.logger != nullptr) {
+                    request_.logger->warn("transcript preview text conversion failed: {}", exception.what());
+                }
+            }
+            catch (...) {
+                if (request_.logger != nullptr) {
+                    request_.logger->warn("transcript preview text conversion failed");
+                }
+            }
         }
 
         if (event.kind == BackendTranscriptEventKind::UtteranceFinalized) {
@@ -496,6 +574,37 @@ void StreamingRecordingController::EventPumpMain(std::stop_token stopToken) noex
                 }
                 finalizeCondition_.notify_all();
             }
+        }
+    }
+}
+
+void StreamingRecordingController::DispatchTranscriptPreview(
+    std::wstring stableText,
+    std::wstring unstableText,
+    bool isFinal) noexcept {
+    if (!request_.onTranscriptPreview || request_.config == nullptr || !request_.config->ui.showTranscriptPreview) {
+        return;
+    }
+
+    if (!isFinal) {
+        MoveTrailingWordsToUnstablePreview(stableText, unstableText);
+    }
+
+    if (stableText.empty() && unstableText.empty()) {
+        return;
+    }
+
+    try {
+        request_.onTranscriptPreview(std::move(stableText), std::move(unstableText), isFinal);
+    }
+    catch (const std::exception& exception) {
+        if (request_.logger != nullptr) {
+            request_.logger->warn("transcript preview callback failed: {}", exception.what());
+        }
+    }
+    catch (...) {
+        if (request_.logger != nullptr) {
+            request_.logger->warn("transcript preview callback failed");
         }
     }
 }
@@ -710,6 +819,7 @@ StreamingRecordingResult StreamingRecordingController::Finish() noexcept {
         if (transcriptUsable) {
             result.hasTranscript = true;
             result.transcript = WideFromUtf8(transcriptUtf8);
+            DispatchTranscriptPreview(std::wstring(result.transcript), std::wstring{}, true);
 
             if (!insertTranscript()) {
                 writeWavIfNeeded();
@@ -770,6 +880,7 @@ StreamingRecordingResult StreamingRecordingController::Finish() noexcept {
 
         result.hasTranscript = true;
         result.transcript = WideFromUtf8(transcriptUtf8);
+        DispatchTranscriptPreview(std::wstring(result.transcript), std::wstring{}, true);
 
         if (!insertTranscript()) {
             enqueueArchive(false);

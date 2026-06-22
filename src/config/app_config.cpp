@@ -66,7 +66,8 @@ constexpr char kFallbackConfigJson[] = R"json({
   },
   "ui": {
     "show_status_pill": true,
-        "status_pill_position": "tray_anchor"
+    "show_transcript_preview": false,
+    "status_pill_position": "tray_anchor"
   },
   "system": {
                 "auto_start_with_windows": false,
@@ -834,6 +835,10 @@ bool LoadConfiguredUiSettings(const json& root, UiConfig& ui, std::wstring& fail
         return false;
     }
 
+    if (!LoadConfiguredBoolean(root, "ui", "show_transcript_preview", ui.showTranscriptPreview, failureReason)) {
+        return false;
+    }
+
     std::string position = std::string(StatusPillPlacementToConfigString(ui.statusPillPlacement));
     if (!LoadConfiguredString(root, "ui", "status_pill_position", position, failureReason)) {
         return false;
@@ -1169,6 +1174,7 @@ bool SaveAppSettings(const AppConfig& config, const AppSettingsUpdate& settings,
     root["transcription"]["streaming"]["finalize_timeout_ms"] = settings.transcription.streaming.finalizeTimeoutMs;
     root["transcription"]["streaming"]["fallback_to_file_transcription"] = settings.transcription.streaming.fallbackToFileTranscription;
     root["ui"]["show_status_pill"] = settings.ui.showStatusPill;
+    root["ui"]["show_transcript_preview"] = settings.ui.showTranscriptPreview;
     root["ui"]["status_pill_position"] = StatusPillPlacementToConfigString(settings.ui.statusPillPlacement);
     root["system"]["auto_start_with_windows"] = settings.system.autoStartWithWindows;
     root["system"]["use_media_play_pause_toggle"] = settings.system.useMediaPlayPauseToggle;

@@ -57,6 +57,7 @@ constexpr int kGeneralTabControlIds[] = {
     IDC_SETTINGS_STREAMING_ENABLED,
     IDC_SETTINGS_START_WITH_WINDOWS,
     IDC_SETTINGS_SHOW_STATUS_PILL,
+    IDC_SETTINGS_SHOW_TRANSCRIPT_PREVIEW,
     IDC_SETTINGS_USE_MEDIA_PLAY_PAUSE_TOGGLE,
     IDC_SETTINGS_TOGGLE_HOTKEY_LABEL,
     IDC_SETTINGS_TOGGLE_HOTKEY,
@@ -350,6 +351,7 @@ SettingsTab CurrentSettingsTab(HWND dialog) {
 
 void UpdatePlacementEnabledState(HWND dialog) {
     const BOOL enabled = IsDlgButtonChecked(dialog, IDC_SETTINGS_SHOW_STATUS_PILL) == BST_CHECKED;
+    EnableWindow(GetDlgItem(dialog, IDC_SETTINGS_SHOW_TRANSCRIPT_PREVIEW), enabled);
     EnableWindow(GetDlgItem(dialog, IDC_SETTINGS_STATUS_PILL_POSITION_LABEL), enabled);
     EnableWindow(GetDlgItem(dialog, IDC_SETTINGS_STATUS_PILL_POSITION), enabled);
 }
@@ -556,6 +558,7 @@ void ApplyDefaultSettingsToDialog(HWND dialog) {
     CheckDlgButton(dialog, IDC_SETTINGS_START_WITH_WINDOWS, defaultConfig.system.autoStartWithWindows ? BST_CHECKED : BST_UNCHECKED);
     CheckDlgButton(dialog, IDC_SETTINGS_USE_MEDIA_PLAY_PAUSE_TOGGLE, defaultConfig.system.useMediaPlayPauseToggle ? BST_CHECKED : BST_UNCHECKED);
     CheckDlgButton(dialog, IDC_SETTINGS_SHOW_STATUS_PILL, defaultConfig.ui.showStatusPill ? BST_CHECKED : BST_UNCHECKED);
+    CheckDlgButton(dialog, IDC_SETTINGS_SHOW_TRANSCRIPT_PREVIEW, defaultConfig.ui.showTranscriptPreview ? BST_CHECKED : BST_UNCHECKED);
     SelectPlacementCombo(dialog, defaultConfig.ui.statusPillPlacement);
     UpdatePlacementEnabledState(dialog);
     UpdateArchiveEnabledState(dialog);
@@ -604,6 +607,7 @@ INT_PTR CALLBACK SettingsDialogProc(HWND dialog, UINT message, WPARAM wordParam,
         CheckDlgButton(dialog, IDC_SETTINGS_START_WITH_WINDOWS, values->autoStartWithWindows ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(dialog, IDC_SETTINGS_USE_MEDIA_PLAY_PAUSE_TOGGLE, values->useMediaPlayPauseToggle ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(dialog, IDC_SETTINGS_SHOW_STATUS_PILL, values->showStatusPill ? BST_CHECKED : BST_UNCHECKED);
+        CheckDlgButton(dialog, IDC_SETTINGS_SHOW_TRANSCRIPT_PREVIEW, values->showTranscriptPreview ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(dialog, IDC_SETTINGS_ARCHIVE_ENABLED, values->archiveEnabled ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(dialog, IDC_SETTINGS_ARCHIVE_TRANSCRIPT, values->archivePersistTranscript ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(dialog, IDC_SETTINGS_ARCHIVE_AUDIO, values->archivePersistAudio ? BST_CHECKED : BST_UNCHECKED);
@@ -814,6 +818,7 @@ INT_PTR CALLBACK SettingsDialogProc(HWND dialog, UINT message, WPARAM wordParam,
                 values->autoStartWithWindows = IsDlgButtonChecked(dialog, IDC_SETTINGS_START_WITH_WINDOWS) == BST_CHECKED;
                 values->useMediaPlayPauseToggle = IsDlgButtonChecked(dialog, IDC_SETTINGS_USE_MEDIA_PLAY_PAUSE_TOGGLE) == BST_CHECKED;
                 values->showStatusPill = IsDlgButtonChecked(dialog, IDC_SETTINGS_SHOW_STATUS_PILL) == BST_CHECKED;
+                values->showTranscriptPreview = IsDlgButtonChecked(dialog, IDC_SETTINGS_SHOW_TRANSCRIPT_PREVIEW) == BST_CHECKED;
             }
             EndDialog(dialog, IDOK);
             return TRUE;

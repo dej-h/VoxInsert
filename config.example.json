@@ -42,6 +42,7 @@
   },
   "ui": {
     "show_status_pill": true,
+    "show_transcript_preview": false,
     "status_pill_position": "tray_anchor"
   },
   "system": {
