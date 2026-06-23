@@ -23,6 +23,12 @@ Out of the box it supports:
 - Settings UI for provider choice, hotkeys, credentials, startup, and archive options
 - optional local archives with Opus audio, transcript text, and metadata
 
+## Latency
+
+Recent release-build measurements with `mistral_realtime` on the developer machine showed post-stop text insertion completing in `599-868 ms` across 10 successful dictations, with a mean of `668.5 ms` and a median of `646.5 ms`.
+
+This is measured from pressing `F8` to stop recording through microphone stop, realtime finalization, clipboard insertion, and the small post-insert WAV write. In that sample, median microphone stop was `226.5 ms`, median realtime finalization was `259 ms`, and median clipboard insertion was `154.5 ms`. Actual latency depends on provider, network, microphone driver, transcript length, and machine state.
+
 ## Quick Start
 
 Download the latest release zip from [GitHub Releases](https://github.com/dej-h/VoxInsert/releases), extract it, then run:
