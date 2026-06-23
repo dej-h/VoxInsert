@@ -41,6 +41,9 @@ bool TryStartStreamingRecording(
             static_cast<WPARAM>(static_cast<int>(nextState)),
             0);
     };
+    request.onTranscriptPreview = [&context](std::wstring stableText, std::wstring unstableText, bool isFinal) {
+        context.statusPill.PostTranscriptPreview(std::move(stableText), std::move(unstableText), isFinal);
+    };
 
     return context.streamingController->Start(request, failureReason);
 }

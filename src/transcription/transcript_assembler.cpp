@@ -260,4 +260,46 @@ std::string TranscriptAssembler::FinalTranscriptUtf8() const {
     return combined;
 }
 
+TranscriptPreviewText TranscriptAssembler::PreviewText() const {
+    TranscriptPreviewText preview;
+    bool hasVisibleText = false;
+    bool allVisibleTextFinalized = true;
+
+    for (const UtteranceId& id : order_) {
+        const auto it = states_.find(id);
+        if (it == states_.end()) {
+            continue;
+        }
+
+        const TranscriptAssemblyState& state = it->second;
+        const std::string stableText = state.finalized
+            ? state.finalTextUtf8
+            : state.stablePrefixUtf8;
+        const std::string& unstableText = state.unstableTailUtf8;
+        if (stableText.empty() && unstableText.empty()) {
+            continue;
+        }
+
+        if (hasVisibleText) {
+            preview.stableUtf8 += ' ';
+        }
+        preview.stableUtf8 += stableText;
+
+        if (!state.finalized) {
+            allVisibleTextFinalized = false;
+            if (!unstableText.empty()) {
+                if (!preview.unstableUtf8.empty()) {
+                    preview.unstableUtf8 += ' ';
+                }
+                preview.unstableUtf8 += unstableText;
+            }
+        }
+
+        hasVisibleText = true;
+    }
+
+    preview.finalized = hasVisibleText && allVisibleTextFinalized;
+    return preview;
+}
+
 } // namespace voxinsert

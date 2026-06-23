@@ -117,6 +117,7 @@ bool AudioRecorder::Start(const AudioConfig& config, AmplitudeCallback amplitude
         activeDeviceName_.clear();
         startupCompleted_ = false;
         startupSucceeded_ = false;
+        maxRecordingLengthReached_ = false;
     }
     stopRequestedAtTicks_.store(0, std::memory_order_release);
 
@@ -167,14 +168,17 @@ bool AudioRecorder::Stop(std::vector<int16_t>& samples, std::wstring& failureRea
         return false;
     }
 
+    const bool maxRecordingLengthReached = maxRecordingLengthReached_;
     const auto sampleMoveStartedAt = AudioClock::now();
     samples = std::move(samples_);
     const size_t returnedSampleCount = samples.size();
     samples_.clear();
+    maxRecordingLengthReached_ = false;
     const auto finishedAt = AudioClock::now();
     if (auto* logger = spdlog::default_logger_raw()) {
         logger->debug(
-            "audio recorder stop latency outcome=success stop_signal={}ms join_wait={}ms lock_wait={}ms sample_move={}ms total={}ms worker_joinable={} returned_samples={}",
+            "audio recorder stop latency outcome={} stop_signal={}ms join_wait={}ms lock_wait={}ms sample_move={}ms total={}ms worker_joinable={} returned_samples={}",
+            maxRecordingLengthReached ? "max_length_reached" : "success",
             ElapsedMilliseconds(stopStartedAt, stopSignalSentAt),
             ElapsedMilliseconds(stopSignalSentAt, workerJoinedAt),
             ElapsedMilliseconds(lockStartedAt, lockAcquiredAt),
@@ -195,6 +199,7 @@ void AudioRecorder::Cancel() noexcept {
     samples_.clear();
     workerFailureReason_.clear();
     activeDeviceName_.clear();
+    maxRecordingLengthReached_ = false;
 }
 
 bool AudioRecorder::IsRecording() const noexcept {
@@ -333,7 +338,7 @@ void AudioRecorder::RecordingThreadMain(AudioConfig config, AmplitudeCallback am
         if (capturedFrames >= maxFrames) {
             recordingRequested_ = false;
             const std::scoped_lock lock(mutex_);
-            workerFailureReason_ = L"Maximum recording length reached before stop was requested.";
+            maxRecordingLengthReached_ = true;
             break;
         }
     }

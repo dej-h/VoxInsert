@@ -374,10 +374,14 @@ private:
         return payload.dump();
     }
 
-    void CompleteStartupHandshake() {
+    void SendSessionUpdateAfterTransportOpen() {
         size_t queuedAtOpen = 0;
         {
             const std::scoped_lock lock(stateMutex_);
+            if (opened_ || sessionUpdateSent_ || connectFailed_) {
+                return;
+            }
+            sessionUpdateSent_ = true;
             queuedAtOpen = pendingOutboundPayloads_.size();
         }
 
@@ -395,12 +399,37 @@ private:
         if (!SendSerializedNow(BuildSessionConfigurationPayload(), failureReason, "session.update")) {
             return;
         }
+    }
 
+    void CompleteStartupHandshake() {
+        size_t queuedBeforeReady = 0;
+        {
+            const std::scoped_lock lock(stateMutex_);
+            if (opened_ || connectFailed_) {
+                return;
+            }
+            queuedBeforeReady = pendingOutboundPayloads_.size();
+        }
+
+        if (logger_ != nullptr) {
+            const auto handshakeMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                         std::chrono::steady_clock::now() - connectStartedAt_)
+                                         .count();
+            logger_->debug(
+                "openai realtime: session.updated received in {}ms ({} queued message(s)); flushing startup audio",
+                handshakeMs,
+                queuedBeforeReady);
+        }
+
+        std::wstring failureReason;
         size_t flushedCount = 0;
         while (true) {
             std::vector<std::string> pending;
             {
                 const std::scoped_lock lock(stateMutex_);
+                if (opened_ || connectFailed_) {
+                    return;
+                }
                 pending.swap(pendingOutboundPayloads_);
                 if (pending.empty()) {
                     opened_ = true;
@@ -447,7 +476,7 @@ private:
     void HandleSocketMessage(const ix::WebSocketMessagePtr& message) {
         switch (message->type) {
         case ix::WebSocketMessageType::Open: {
-            CompleteStartupHandshake();
+            SendSessionUpdateAfterTransportOpen();
             break;
         }
         case ix::WebSocketMessageType::Message:
@@ -513,7 +542,10 @@ private:
         const std::string type = parsed.value("type", std::string{});
         const std::string itemId = parsed.value("item_id", std::string{});
 
-        if (type == "conversation.item.input_audio_transcription.delta") {
+        if (type == "session.updated") {
+            CompleteStartupHandshake();
+        }
+        else if (type == "conversation.item.input_audio_transcription.delta") {
             const std::string delta = parsed.value("delta", std::string{});
             if (!delta.empty()) {
                 const int count = ++deltaCount_;
@@ -565,6 +597,7 @@ private:
     std::mutex sendMutex_;
     std::condition_variable stateCondition_;
     bool opened_ = false;
+    bool sessionUpdateSent_ = false;
     bool connectFailed_ = false;
     std::wstring connectFailureReason_;
     std::atomic<bool> closed_{false};
@@ -574,8 +607,8 @@ private:
     std::chrono::steady_clock::time_point connectStartedAt_{};
     // Messages queued before the realtime session is fully ready. This keeps
     // startup audio, stop/commit, and any late-arriving chunks in one ordered
-    // stream so the callback thread can flush them serially after session.update.
-    // Guarded by stateMutex_.
+    // stream so the callback thread can flush them serially after session.updated
+    // confirms the session configuration. Guarded by stateMutex_.
     std::vector<std::string> pendingOutboundPayloads_;
 
     // Diagnostics for the delta/diff path: how many incremental transcription

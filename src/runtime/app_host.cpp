@@ -75,6 +75,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wordParam, LPARAM 
                     window,
                     kTrayIconId,
                     context->config.ui.showStatusPill,
+                    context->config.ui.showTranscriptPreview,
                     context->config.ui.statusPillPlacement,
                     context->logger,
                     statusPillFailureReason)) {

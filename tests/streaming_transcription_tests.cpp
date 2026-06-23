@@ -386,6 +386,28 @@ void TestAssemblerRevisingSnapshots() {
     CHECK_EQ(assembler.FinalTranscriptUtf8(), std::string("the quintessence"));
 }
 
+void TestAssemblerPreviewTextSeparatesStableAndUnstable() {
+    TranscriptAssembler assembler;
+
+    assembler.Apply(MakeSnapshot("u1", "the quick"));
+    auto preview = assembler.PreviewText();
+    CHECK_EQ(preview.stableUtf8, std::string(""));
+    CHECK_EQ(preview.unstableUtf8, std::string("the quick"));
+    CHECK(!preview.finalized);
+
+    assembler.Apply(MakeSnapshot("u1", "the quick brown"));
+    preview = assembler.PreviewText();
+    CHECK_EQ(preview.stableUtf8, std::string("the quick"));
+    CHECK_EQ(preview.unstableUtf8, std::string(" brown"));
+    CHECK(!preview.finalized);
+
+    assembler.Apply(MakeFinal("u1", "the quick brown fox"));
+    preview = assembler.PreviewText();
+    CHECK_EQ(preview.stableUtf8, std::string("the quick brown fox"));
+    CHECK_EQ(preview.unstableUtf8, std::string(""));
+    CHECK(preview.finalized);
+}
+
 void TestAssemblerRevisingSnapshotsUtf8Safe() {
     TranscriptAssembler assembler;
     PatchConsumer consumer;
@@ -586,6 +608,7 @@ int main() {
     TestAssemblerAppendOnly();
     TestAssemblerAppendOnlyFinalizesFromAccumulator();
     TestAssemblerRevisingSnapshots();
+    TestAssemblerPreviewTextSeparatesStableAndUnstable();
     TestAssemblerRevisingSnapshotsUtf8Safe();
     TestAssemblerMultipleUtterances();
     TestAssemblerOpenAiRealtimeGoldenTrace();

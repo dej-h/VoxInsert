@@ -30,6 +30,7 @@ struct SettingsDialogValues {
     bool autoStartWithWindows = false;
     bool useMediaPlayPauseToggle = false;
     bool showStatusPill = true;
+    bool showTranscriptPreview = false;
     bool archiveEnabled = false;
     bool archivePersistTranscript = true;
     bool archivePersistAudio = true;

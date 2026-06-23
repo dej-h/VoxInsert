@@ -46,6 +46,7 @@ struct StreamingRecordingRequest {
     AudioRecorder::AmplitudeCallback amplitudeCallback;
     std::function<bool()> isShutdownRequested;
     std::function<void(PostRecordingPhase)> onPhaseChanged;
+    std::function<void(std::wstring, std::wstring, bool)> onTranscriptPreview;
 };
 
 struct StreamingRecordingResult {
@@ -98,6 +99,7 @@ private:
     void EventPumpMain(std::stop_token stopToken) noexcept;
     void OnBackendEvent(BackendTranscriptEvent event);
     void StopWorkers() noexcept;
+    void DispatchTranscriptPreview(std::wstring stableText, std::wstring unstableText, bool isFinal) noexcept;
     void ResetAudioSlots(size_t sampleCapacity);
     void MarkStreamingTranscriptUntrusted(const char* reason) noexcept;
     size_t ReadyAudioSlotCount() const noexcept;

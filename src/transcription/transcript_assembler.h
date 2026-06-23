@@ -10,6 +10,16 @@
 
 namespace voxinsert {
 
+struct TranscriptPreviewText {
+    std::string stableUtf8;
+    std::string unstableUtf8;
+    bool finalized = false;
+
+    bool Empty() const noexcept {
+        return stableUtf8.empty() && unstableUtf8.empty();
+    }
+};
+
 // Converts provider-neutral BackendTranscriptEvent values into TranscriptPatch
 // values and maintains the assembled transcript for each utterance.
 //
@@ -43,6 +53,11 @@ public:
     // Combined transcript across all utterances in first-seen order. Finalized
     // utterances contribute their final text; others contribute visible text.
     std::string FinalTranscriptUtf8() const;
+
+    // Combined preview text split into confirmed and still-changing portions.
+    // Append-only backends contribute to stableUtf8; revising snapshot backends
+    // keep their current hypothesis tail in unstableUtf8 until finalization.
+    TranscriptPreviewText PreviewText() const;
 
     bool IsFinalized(const UtteranceId& utteranceId) const;
 

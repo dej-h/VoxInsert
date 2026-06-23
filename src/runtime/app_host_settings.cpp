@@ -199,6 +199,7 @@ SettingsDialogValues BuildSettingsDialogValues(const AppContext& context) {
     values.autoStartWithWindows = context.config.system.autoStartWithWindows;
     values.useMediaPlayPauseToggle = context.config.system.useMediaPlayPauseToggle;
     values.showStatusPill = context.config.ui.showStatusPill;
+    values.showTranscriptPreview = context.config.ui.showTranscriptPreview;
     values.archiveEnabled = context.config.archive.enabled;
     values.archivePersistTranscript = context.config.archive.persistTranscript;
     values.archivePersistAudio = context.config.archive.persistAudio;
@@ -227,6 +228,7 @@ AppConfig BuildConfigFromSettings(const AppConfig& currentConfig, const Settings
     nextConfig.transcription.streaming.provider =
         (nextConfig.transcription.provider == "mistral") ? "mistral_realtime" : "openai_realtime";
     nextConfig.ui.showStatusPill = values.showStatusPill;
+    nextConfig.ui.showTranscriptPreview = values.showTranscriptPreview;
     nextConfig.ui.statusPillPlacement = values.statusPillPlacement;
     nextConfig.system.autoStartWithWindows = values.autoStartWithWindows;
     nextConfig.system.useMediaPlayPauseToggle = values.useMediaPlayPauseToggle;
@@ -335,7 +337,14 @@ void CheckTranscriptionCredentialOnStartup(AppContext& context) {
 
 void RecreateStatusPillIfNeeded(AppContext& context, const UiConfig& previousUiConfig) {
     if (previousUiConfig.showStatusPill == context.config.ui.showStatusPill &&
+        previousUiConfig.showTranscriptPreview == context.config.ui.showTranscriptPreview &&
         previousUiConfig.statusPillPlacement == context.config.ui.statusPillPlacement) {
+        return;
+    }
+
+    if (previousUiConfig.showStatusPill == context.config.ui.showStatusPill &&
+        previousUiConfig.statusPillPlacement == context.config.ui.statusPillPlacement) {
+        context.statusPill.SetTranscriptPreviewEnabled(context.config.ui.showTranscriptPreview);
         return;
     }
 
@@ -351,6 +360,7 @@ void RecreateStatusPillIfNeeded(AppContext& context, const UiConfig& previousUiC
             context.window,
             kTrayIconId,
             context.config.ui.showStatusPill,
+            context.config.ui.showTranscriptPreview,
             context.config.ui.statusPillPlacement,
             context.logger,
             statusPillFailureReason)) {
