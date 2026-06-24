@@ -13,7 +13,7 @@
 #include "config/app_config.h"
 #include "runtime/bounded_queue.h"
 #include "runtime/spsc_index_ring.h"
-#include "transcription/fake_streaming_transcription_service.h"
+#include "fakes/fake_streaming_transcription_service.h"
 #include "transcription/streaming_transcription_service.h"
 #include "transcription/transcript_assembler.h"
 

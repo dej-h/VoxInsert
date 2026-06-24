@@ -1043,8 +1043,8 @@ Likely new files:
 - `src/transcription/streaming_transcription_service.h`
 - `src/transcription/streaming_transcription_client.h`
 - `src/transcription/streaming_transcription_client.cpp`
-- `src/transcription/fake_streaming_transcription_service.h`
-- `src/transcription/fake_streaming_transcription_service.cpp`
+- `tests/fakes/fake_streaming_transcription_service.h`
+- `tests/fakes/fake_streaming_transcription_service.cpp`
 - `src/transcription/transcript_assembler.h`
 - `src/transcription/transcript_assembler.cpp`
 - `src/runtime/streaming_recording_controller.h`

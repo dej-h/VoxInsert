@@ -100,11 +100,14 @@ if (VOXINSERT_BUILD_TESTS)
 
     add_executable(voxinsert_streaming_tests
         src/transcription/transcript_assembler.cpp
-        src/transcription/fake_streaming_transcription_service.cpp
+        tests/fakes/fake_streaming_transcription_service.cpp
         tests/streaming_transcription_tests.cpp
     )
 
-    target_include_directories(voxinsert_streaming_tests PRIVATE src)
+    target_include_directories(voxinsert_streaming_tests PRIVATE
+        src
+        tests
+    )
 
     target_compile_definitions(voxinsert_streaming_tests PRIVATE
         UNICODE

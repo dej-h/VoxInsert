@@ -1,4 +1,4 @@
-#include "transcription/fake_streaming_transcription_service.h"
+#include "fakes/fake_streaming_transcription_service.h"
 
 #include <utility>
 
